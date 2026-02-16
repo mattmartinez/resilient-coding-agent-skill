@@ -16,10 +16,16 @@
 # Retry: 3min base, doubles on each consecutive failure, resets when agent
 # is running normally. Stops after 5 hours wall-clock.
 
-set -euo pipefail
+set -uo pipefail
 
 SESSION="${1:?Usage: monitor.sh <tmux-session> <agent>}"
 AGENT="${2:?Usage: monitor.sh <tmux-session> <agent>}"
+
+# Validate agent at startup
+case "$AGENT" in
+  codex|claude|opencode|pi) ;;
+  *) echo "Unsupported agent: $AGENT (must be codex, claude, opencode, or pi)" >&2; exit 1 ;;
+esac
 
 CODEX_SESSION_FILE="/tmp/${SESSION}.codex-session-id"
 RETRY_COUNT=0
@@ -35,8 +41,19 @@ while true; do
 
   INTERVAL=$(( 180 * (2 ** RETRY_COUNT) ))
 
+  # Cap sleep so we don't overshoot the 5h deadline
+  REMAINING=$(( DEADLINE_TS - NOW_TS ))
+  if [ "$INTERVAL" -gt "$REMAINING" ]; then
+    INTERVAL="$REMAINING"
+  fi
+
+  # Capture tmux pane; if session disappeared between has-session and capture,
+  # treat it as session gone rather than crashing the script.
   if tmux has-session -t "$SESSION" 2>/dev/null; then
-    OUTPUT="$(tmux capture-pane -t "$SESSION" -p -S -120)"
+    OUTPUT="$(tmux capture-pane -t "$SESSION" -p -S -120 2>/dev/null)" || {
+      echo "tmux session $SESSION disappeared during capture. Stopping monitor."
+      break
+    }
     RECENT="$(printf '%s\n' "$OUTPUT" | tail -n 40)"
 
     if printf '%s\n' "$RECENT" | grep -q "__TASK_DONE__"; then
@@ -44,10 +61,15 @@ while true; do
       break
     fi
 
+    # Detect shell prompt return. Only match lines that are ONLY a prompt
+    # (user@host indicators or bare shell markers) to avoid false positives
+    # from agent output containing "> " or "$ " mid-line.
     PROMPT_BACK=0
     EXIT_HINT=0
-    printf '%s\n' "$RECENT" | grep -Eq '([$%] $|> $)' && PROMPT_BACK=1
-    printf '%s\n' "$RECENT" | grep -Eiq '(exit code|exited|status [1-9][0-9]*)' && EXIT_HINT=1
+    LAST_LINE="$(printf '%s\n' "$RECENT" | grep -v '^$' | tail -n 1)"
+    printf '%s\n' "$LAST_LINE" | grep -Eq '^[^[:space:]]*[$%#>] $' && PROMPT_BACK=1
+    # Match explicit exit indicators, not substrings like "HTTP status 200"
+    printf '%s\n' "$RECENT" | grep -Eiq '(exit code [0-9]|exited with|exit status [1-9])' && EXIT_HINT=1
 
     if [ "$PROMPT_BACK" -eq 1 ] || [ "$EXIT_HINT" -eq 1 ]; then
       RETRY_COUNT=$(( RETRY_COUNT + 1 ))
@@ -72,10 +94,7 @@ while true; do
           tmux send-keys -t "$SESSION" 'opencode run "Continue"' Enter
           ;;
         pi)
-          echo "Pi has no resume command. Manual restart required."
-          ;;
-        *)
-          echo "Unsupported agent: $AGENT"
+          echo "Pi has no resume command. Manual restart required. Stopping monitor."
           break
           ;;
       esac

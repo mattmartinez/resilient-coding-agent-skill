@@ -61,7 +61,7 @@ EVENTS_FILE="/tmp/${SESSION}.events.jsonl"
 SESSION_FILE="/tmp/${SESSION}.codex-session-id"
 
 tmux new-session -d -s "$SESSION"
-tmux send-keys -t "$SESSION" 'cd ~/project && set -o pipefail && codex exec --full-auto --json "Refactor auth module" | tee /tmp/codex-refactor.events.jsonl && openclaw system event --text "Codex done: auth refactor" --mode now && echo "__TASK_DONE__"' Enter
+tmux send-keys -t "$SESSION" 'cd ~/project && set -o pipefail && codex exec --full-auto --json "Refactor auth module" | tee /tmp/codex-refactor.events.jsonl && openclaw system event --text "Codex done: auth refactor" --mode now; echo "__TASK_DONE__"' Enter
 
 # Save this task's Codex session ID (safer than resume --last when multiple tasks run)
 until [ -s "$SESSION_FILE" ]; do

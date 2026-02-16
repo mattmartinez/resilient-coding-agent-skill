@@ -1,6 +1,6 @@
 ---
 name: resilient-coding-agent
-description: "Run long-running coding agents (Codex, Claude Code, etc.) in tmux sessions that survive host restarts, with automatic resume on interruption."
+description: "Run long-running coding agents (Codex, Claude Code, etc.) in tmux sessions that survive orchestrator restarts, with automatic resume on interruption."
 metadata:
   openclaw:
     emoji: "🛡️"
@@ -11,7 +11,7 @@ metadata:
 
 # Resilient Coding Agent
 
-Long-running coding agent tasks (Codex CLI, Claude Code, OpenCode, Pi) are vulnerable to interruption: host restarts, process crashes, network drops. This skill decouples the coding agent process from the orchestrator using tmux, and leverages agent-native session resume for recovery.
+Long-running coding agent tasks (Codex CLI, Claude Code, OpenCode, Pi) are vulnerable to interruption: orchestrator restarts, process crashes, network drops. This skill decouples the coding agent process from the orchestrator using tmux, and leverages agent-native session resume for recovery.
 
 ## Prerequisites
 
@@ -62,20 +62,20 @@ tmux send-keys -t pi-<task-name> 'cd <project-dir> && pi -p "<task prompt>" && e
 
 ### Completion Notification (Optional)
 
-Chain a notification command after the agent so you know when it finishes:
+Chain a notification command after the agent so you know when it finishes. Use `;` before `echo "__TASK_DONE__"` so the marker prints even if the notification command fails:
 
 ```bash
 # Generic: touch a marker file
-tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && touch /tmp/codex-<task-name>.done && echo "__TASK_DONE__"' Enter
+tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && touch /tmp/codex-<task-name>.done; echo "__TASK_DONE__"' Enter
 
 # macOS: system notification
-tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && osascript -e "display notification \"Task done\" with title \"Codex\"" && echo "__TASK_DONE__"' Enter
+tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && osascript -e "display notification \"Task done\" with title \"Codex\""; echo "__TASK_DONE__"' Enter
 
 # OpenClaw: system event (immediate wake)
-tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && openclaw system event --text "Codex done: <summary>" --mode now && echo "__TASK_DONE__"' Enter
+tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && openclaw system event --text "Codex done: <summary>" --mode now; echo "__TASK_DONE__"' Enter
 
 # Webhook / curl
-tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && curl -s -X POST <webhook-url> -d "task=done" && echo "__TASK_DONE__"' Enter
+tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && curl -s -X POST <webhook-url> -d "task=done"; echo "__TASK_DONE__"' Enter
 ```
 
 ## Monitor Progress
