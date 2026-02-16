@@ -102,40 +102,61 @@ Use a done marker in your start command so the monitor can distinguish normal co
 tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && echo "__TASK_DONE__"' Enter
 ```
 
-Concrete periodic monitor (run every 2-3 minutes):
+Concrete periodic monitor with exponential backoff:
 
 ```bash
 SESSION="codex-<task-name>"   # or claude-<task-name>
 AGENT="codex"                 # codex | claude
 LINES=120
 DONE_MARKER="__TASK_DONE__"
+BASE_INTERVAL=180             # initial check interval (seconds)
+MAX_TOTAL=3600                # stop retrying after this many seconds (default: 1 hour)
+RETRY_COUNT=0
+TOTAL_WAIT=0
 
 while true; do
+  INTERVAL=$(( BASE_INTERVAL * (2 ** RETRY_COUNT) ))
+
   if tmux has-session -t "$SESSION" 2>/dev/null; then
     OUTPUT="$(tmux capture-pane -t "$SESSION" -p -S -"${LINES}")"
     RECENT="$(printf '%s\n' "$OUTPUT" | tail -n 40)"
 
-    if ! printf '%s\n' "$RECENT" | grep -q "$DONE_MARKER"; then
-      PROMPT_BACK=0
-      EXIT_HINT=0
-      printf '%s\n' "$RECENT" | grep -Eq '([$%] $|> $)' && PROMPT_BACK=1
-      printf '%s\n' "$RECENT" | grep -Eiq '(exit code|exited|status [1-9][0-9]*)' && EXIT_HINT=1
+    if printf '%s\n' "$RECENT" | grep -q "$DONE_MARKER"; then
+      break  # task completed normally
+    fi
 
-      if [ "$PROMPT_BACK" -eq 1 ] || [ "$EXIT_HINT" -eq 1 ]; then
-        case "$AGENT" in
-          codex)
-            tmux send-keys -t "$SESSION" 'codex exec resume --last "Continue the previous task"' Enter
-            ;;
-          claude)
-            tmux send-keys -t "$SESSION" 'claude --resume' Enter
-            ;;
-        esac
+    PROMPT_BACK=0
+    EXIT_HINT=0
+    printf '%s\n' "$RECENT" | grep -Eq '([$%] $|> $)' && PROMPT_BACK=1
+    printf '%s\n' "$RECENT" | grep -Eiq '(exit code|exited|status [1-9][0-9]*)' && EXIT_HINT=1
+
+    if [ "$PROMPT_BACK" -eq 1 ] || [ "$EXIT_HINT" -eq 1 ]; then
+      RETRY_COUNT=$(( RETRY_COUNT + 1 ))
+      TOTAL_WAIT=$(( TOTAL_WAIT + INTERVAL ))
+
+      if [ "$TOTAL_WAIT" -ge "$MAX_TOTAL" ]; then
+        echo "Retry timeout reached (${MAX_TOTAL}s). Stopping monitor."
+        break
       fi
+
+      case "$AGENT" in
+        codex)
+          tmux send-keys -t "$SESSION" 'codex exec resume --last "Continue the previous task"' Enter
+          ;;
+        claude)
+          tmux send-keys -t "$SESSION" 'claude --resume' Enter
+          ;;
+      esac
+    else
+      RETRY_COUNT=0  # agent is running normally, reset backoff
+      INTERVAL=$BASE_INTERVAL
     fi
   fi
-  sleep 180
+  sleep "$INTERVAL"
 done
 ```
+
+`MAX_TOTAL` should match or exceed the rate limit reset window of your model subscription. For example, if rate limits reset hourly, set it to 3600. If the agent keeps failing beyond this window, the monitor stops and you should investigate manually.
 
 When starting long tasks, configure this monitor loop in the orchestrator (background shell loop, supervisor, or cron) so recovery runs automatically without manual checks.
 
