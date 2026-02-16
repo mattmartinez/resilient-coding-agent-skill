@@ -22,7 +22,7 @@ Decouple the coding agent from the orchestrator by running it in a tmux session.
 - Runs coding agents in `tmux` sessions so tasks survive orchestrator restarts
 - Supports periodic health monitoring (`tmux has-session` + `tmux capture-pane`)
 - Detects likely agent exits from shell-prompt return and exit indicators in recent output
-- Auto-recovers with native resume commands (`codex exec resume --last`, `claude --resume`)
+- Auto-recovers with native resume commands (`codex exec resume <session-id>`, `claude --resume`, `opencode run "Continue"`)
 - Supports completion notifications via marker files, system events, or webhooks
 
 ## Supported Agents
@@ -56,20 +56,32 @@ git clone https://github.com/cosformula/resilient-coding-agent-skill.git
 
 ```bash
 # Start a long Codex task in tmux
-tmux new-session -d -s codex-refactor
-tmux send-keys -t codex-refactor 'cd ~/project && codex exec --full-auto "Refactor auth module" && openclaw system event --text "Codex done: auth refactor" --mode now' Enter
+SESSION="codex-refactor"
+EVENTS_FILE="/tmp/${SESSION}.events.jsonl"
+SESSION_FILE="/tmp/${SESSION}.codex-session-id"
+
+tmux new-session -d -s "$SESSION"
+tmux send-keys -t "$SESSION" 'cd ~/project && set -o pipefail && codex exec --full-auto --json "Refactor auth module" | tee /tmp/codex-refactor.events.jsonl && openclaw system event --text "Codex done: auth refactor" --mode now && echo "__TASK_DONE__"' Enter
+
+# Save this task's Codex session ID (safer than resume --last when multiple tasks run)
+until [ -s "$SESSION_FILE" ]; do
+  sed -nE 's/.*"thread_id":"([^"]+)".*/\1/p' "$EVENTS_FILE" 2>/dev/null | head -n 1 > "$SESSION_FILE"
+  sleep 1
+done
 
 # Check progress
-tmux capture-pane -t codex-refactor -p -S -100
+tmux capture-pane -t "$SESSION" -p -S -100
 
-# If Codex crashes, resume
-tmux send-keys -t codex-refactor 'codex exec resume --last "Continue the refactor"' Enter
+# If Codex crashes, resume this exact session
+CODEX_SESSION_ID="$(cat "$SESSION_FILE")"
+tmux send-keys -t "$SESSION" "codex exec resume $CODEX_SESSION_ID \"Continue the refactor\"" Enter
 ```
 
 ## Requirements
 
 - `tmux` installed
 - At least one coding agent CLI (codex, claude, opencode, or pi)
+- `bash` for the provided health-monitor loop (uses Bash arithmetic)
 
 ## Compatibility
 
