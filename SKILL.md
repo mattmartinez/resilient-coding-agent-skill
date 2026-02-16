@@ -73,9 +73,6 @@ tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto 
 
 # OpenClaw: system event (immediate wake)
 tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && openclaw system event --text "Codex done: <summary>" --mode now; echo "__TASK_DONE__"' Enter
-
-# Webhook / curl
-tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && curl -s -X POST <webhook-url> -d "task=done"; echo "__TASK_DONE__"' Enter
 ```
 
 ## Monitor Progress

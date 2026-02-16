@@ -27,6 +27,12 @@ case "$AGENT" in
   *) echo "Unsupported agent: $AGENT (must be codex, claude, opencode, or pi)" >&2; exit 1 ;;
 esac
 
+# Sanitize session name: only allow alphanumeric, dash, underscore, dot
+if ! printf '%s' "$SESSION" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+  echo "Invalid session name: $SESSION (only alphanumeric, dash, underscore, dot allowed)" >&2
+  exit 1
+fi
+
 CODEX_SESSION_FILE="/tmp/${SESSION}.codex-session-id"
 RETRY_COUNT=0
 START_TS="$(date +%s)"
@@ -78,8 +84,13 @@ while true; do
         codex)
           if [ -s "$CODEX_SESSION_FILE" ]; then
             CODEX_SESSION_ID="$(cat "$CODEX_SESSION_FILE")"
+            # Validate session ID format (UUID-like alphanumeric + dashes)
+            if ! printf '%s' "$CODEX_SESSION_ID" | grep -Eq '^[A-Za-z0-9_-]+$'; then
+              echo "Invalid Codex session ID format: $CODEX_SESSION_ID"
+              break
+            fi
             echo "Crash detected. Resuming Codex session $CODEX_SESSION_ID (retry #$RETRY_COUNT)"
-            tmux send-keys -t "$SESSION" "codex exec resume $CODEX_SESSION_ID \"Continue the previous task\"" Enter
+            tmux send-keys -t "$SESSION" "codex exec resume ${CODEX_SESSION_ID} \"Continue the previous task\"" Enter
           else
             echo "Missing Codex session ID file: $CODEX_SESSION_FILE"
             break
