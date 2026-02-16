@@ -7,7 +7,7 @@
 [![CI](https://github.com/cosformula/resilient-coding-agent-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/cosformula/resilient-coding-agent-skill/actions/workflows/ci.yml)
 [![Publish](https://github.com/cosformula/resilient-coding-agent-skill/actions/workflows/clawhub-publish.yml/badge.svg)](https://github.com/cosformula/resilient-coding-agent-skill/actions/workflows/clawhub-publish.yml)
 
-Run long-running coding agents (Codex CLI, Claude Code, OpenCode, Pi) in tmux sessions that survive orchestrator restarts, with automatic resume on interruption.
+Run long-running coding agents (Codex CLI, Claude Code, OpenCode, Pi) in tmux sessions that survive orchestrator restarts, with periodic health checks and automatic resume on interruption.
 
 ## Problem
 
@@ -15,7 +15,15 @@ AI coding agents running long tasks (refactors, full codebase reviews, complex b
 
 ## Solution
 
-Decouple the coding agent from the orchestrator by running it in a tmux session. The agent keeps running regardless of what happens to the orchestrator. When the agent finishes, it sends a notification. If the agent itself crashes, use its native session resume to continue from where it left off.
+Decouple the coding agent from the orchestrator by running it in a tmux session. The agent keeps running regardless of what happens to the orchestrator. A monitor loop can check health with `tmux has-session` and `tmux capture-pane`, detect likely crashes, and trigger native resume commands in the same tmux session.
+
+## Features
+
+- Runs coding agents in `tmux` sessions so tasks survive orchestrator restarts
+- Supports periodic health monitoring (`tmux has-session` + `tmux capture-pane`)
+- Detects likely agent exits from shell-prompt return and exit indicators in recent output
+- Auto-recovers with native resume commands (`codex exec resume --last`, `claude --resume`)
+- Supports completion notifications via marker files, system events, or webhooks
 
 ## Supported Agents
 

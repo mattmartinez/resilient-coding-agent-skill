@@ -13,6 +13,10 @@ metadata:
 
 Long-running coding agent tasks (Codex CLI, Claude Code, OpenCode, Pi) are vulnerable to interruption: host restarts, process crashes, network drops. This skill decouples the coding agent process from the orchestrator using tmux, and leverages agent-native session resume for recovery.
 
+## Prerequisites
+
+This skill assumes the orchestrator is already configured to use coding agent CLIs (Codex, Claude Code, etc.) for coding tasks instead of native sessions. If the orchestrator is still using `sessions_spawn` for coding work, configure it to prefer coding agents first (e.g., via AGENTS.md or equivalent). See the `coding-agent` skill for setup.
+
 ## When to Use This
 
 Use this pattern when:
@@ -78,6 +82,62 @@ tmux capture-pane -t codex-<task-name> -p -S -
 Check progress when:
 - The user asks for a status update
 - You want to proactively report milestones
+
+## Health Monitoring
+
+For long-running tasks, use an active monitor loop instead of only checking on demand.
+
+Periodic check flow:
+1. Run `tmux has-session -t <agent-task>` to confirm the tmux session still exists.
+2. Run `tmux capture-pane -t <agent-task> -p -S -<N>` to capture recent output.
+3. Detect likely agent exit by checking the last `N` lines for:
+   - Shell prompt returned (for example, a line ending in `$ ` or `% `)
+   - Exit indicators (`exit code`, `status <non-zero>`, `exited`)
+   - No completion marker (`__TASK_DONE__`)
+4. If crash is detected, run the agent-native resume command in the same tmux session.
+
+Use a done marker in your start command so the monitor can distinguish normal completion from crashes:
+
+```bash
+tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && echo "__TASK_DONE__"' Enter
+```
+
+Concrete periodic monitor (run every 2-3 minutes):
+
+```bash
+SESSION="codex-<task-name>"   # or claude-<task-name>
+AGENT="codex"                 # codex | claude
+LINES=120
+DONE_MARKER="__TASK_DONE__"
+
+while true; do
+  if tmux has-session -t "$SESSION" 2>/dev/null; then
+    OUTPUT="$(tmux capture-pane -t "$SESSION" -p -S -"${LINES}")"
+    RECENT="$(printf '%s\n' "$OUTPUT" | tail -n 40)"
+
+    if ! printf '%s\n' "$RECENT" | grep -q "$DONE_MARKER"; then
+      PROMPT_BACK=0
+      EXIT_HINT=0
+      printf '%s\n' "$RECENT" | grep -Eq '[$%] $' && PROMPT_BACK=1
+      printf '%s\n' "$RECENT" | grep -Eiq '(exit code|exited|status [1-9][0-9]*)' && EXIT_HINT=1
+
+      if [ "$PROMPT_BACK" -eq 1 ] || [ "$EXIT_HINT" -eq 1 ]; then
+        case "$AGENT" in
+          codex)
+            tmux send-keys -t "$SESSION" 'codex exec resume --last "Continue the previous task"' Enter
+            ;;
+          claude)
+            tmux send-keys -t "$SESSION" 'claude --resume' Enter
+            ;;
+        esac
+      fi
+    fi
+  fi
+  sleep 180
+done
+```
+
+When starting long tasks, configure this monitor loop in the orchestrator (background shell loop, supervisor, or cron) so recovery runs automatically without manual checks.
 
 ## Recovery After Interruption
 
