@@ -1,6 +1,11 @@
 # Resilient Coding Agent
 
+[![ClawHub](https://img.shields.io/badge/ClawHub-resilient--coding--agent-blue)](https://clawhub.com/cosformula/resilient-coding-agent)
+[![Version](https://img.shields.io/badge/version-0.1.1-green)](https://clawhub.com/cosformula/resilient-coding-agent)
+[![GitHub stars](https://img.shields.io/github/stars/cosformula/resilient-coding-agent-skill)](https://github.com/cosformula/resilient-coding-agent-skill)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/cosformula/resilient-coding-agent-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/cosformula/resilient-coding-agent-skill/actions/workflows/ci.yml)
+[![Publish](https://github.com/cosformula/resilient-coding-agent-skill/actions/workflows/clawhub-publish.yml/badge.svg)](https://github.com/cosformula/resilient-coding-agent-skill/actions/workflows/clawhub-publish.yml)
 
 Run long-running coding agents (Codex CLI, Claude Code, OpenCode, Pi) in tmux sessions that survive orchestrator restarts, with automatic resume on interruption.
 
