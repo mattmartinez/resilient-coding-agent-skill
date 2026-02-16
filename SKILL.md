@@ -13,7 +13,9 @@ metadata:
 
 Long-running coding agent tasks (Codex CLI, Claude Code, OpenCode, Pi) are vulnerable to interruption: orchestrator restarts, process crashes, network drops. This skill decouples the coding agent process from the orchestrator using tmux, and leverages agent-native session resume for recovery.
 
-**Note on placeholders:** All `<task-name>`, `<project-dir>`, and `<task prompt>` values in this document are templates for the orchestrator to fill in. The orchestrator must sanitize these values before interpolation (e.g., restrict to `[A-Za-z0-9._-]` for session names, shell-escape prompts) to prevent injection.
+**Placeholders:** `<task-name>` and `<project-dir>` are filled in by the orchestrator. `<task-name>` must match `[a-z0-9-]` only. `<project-dir>` must be a valid existing directory.
+
+**Prompt safety:** Task prompts are never interpolated into shell commands. Instead, write the prompt to a temp file using the orchestrator's `write` tool (no shell involved), then reference it with `"$(cat /tmp/<agent>-<task-name>.prompt)"` inside the tmux command. The shell treats command substitution output inside double quotes as a single literal argument, preventing injection.
 
 ## Prerequisites
 
@@ -35,8 +37,12 @@ Create a tmux session with a descriptive name. Use the agent prefix (`codex-`, `
 ### Codex CLI
 
 ```bash
+# Step 1: Write prompt to file (use orchestrator's write tool, not echo/shell)
+# File: /tmp/codex-<task-name>.prompt
+
+# Step 2: Launch in tmux
 tmux new-session -d -s codex-<task-name>
-tmux send-keys -t codex-<task-name> 'cd <project-dir> && set -o pipefail && codex exec --full-auto --json "<task prompt>" | tee /tmp/codex-<task-name>.events.jsonl && echo "__TASK_DONE__"' Enter
+tmux send-keys -t codex-<task-name> 'cd <project-dir> && set -o pipefail && codex exec --full-auto --json "$(cat /tmp/codex-<task-name>.prompt)" | tee /tmp/codex-<task-name>.events.jsonl && echo "__TASK_DONE__"' Enter
 
 # Capture this task's Codex session ID at start; resume --last is unsafe with concurrent tasks.
 until [ -s /tmp/codex-<task-name>.codex-session-id ]; do
@@ -48,18 +54,21 @@ done
 ### Claude Code
 
 ```bash
+# Write prompt to /tmp/claude-<task-name>.prompt first
 tmux new-session -d -s claude-<task-name>
-tmux send-keys -t claude-<task-name> 'cd <project-dir> && claude -p "<task prompt>" && echo "__TASK_DONE__"' Enter
+tmux send-keys -t claude-<task-name> 'cd <project-dir> && claude -p "$(cat /tmp/claude-<task-name>.prompt)" && echo "__TASK_DONE__"' Enter
 ```
 
 ### OpenCode / Pi
 
 ```bash
+# Write prompt to /tmp/opencode-<task-name>.prompt first
 tmux new-session -d -s opencode-<task-name>
-tmux send-keys -t opencode-<task-name> 'cd <project-dir> && opencode run "<task prompt>" && echo "__TASK_DONE__"' Enter
+tmux send-keys -t opencode-<task-name> 'cd <project-dir> && opencode run "$(cat /tmp/opencode-<task-name>.prompt)" && echo "__TASK_DONE__"' Enter
 
+# Write prompt to /tmp/pi-<task-name>.prompt first
 tmux new-session -d -s pi-<task-name>
-tmux send-keys -t pi-<task-name> 'cd <project-dir> && pi -p "<task prompt>" && echo "__TASK_DONE__"' Enter
+tmux send-keys -t pi-<task-name> 'cd <project-dir> && pi -p "$(cat /tmp/pi-<task-name>.prompt)" && echo "__TASK_DONE__"' Enter
 ```
 
 ### Completion Notification (Optional)
@@ -68,13 +77,13 @@ Chain a notification command after the agent so you know when it finishes. Use `
 
 ```bash
 # Generic: touch a marker file
-tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && touch /tmp/codex-<task-name>.done; echo "__TASK_DONE__"' Enter
+tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "$(cat /tmp/codex-<task-name>.prompt)" && touch /tmp/codex-<task-name>.done; echo "__TASK_DONE__"' Enter
 
 # macOS: system notification
-tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && osascript -e "display notification \"Task done\" with title \"Codex\""; echo "__TASK_DONE__"' Enter
+tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "$(cat /tmp/codex-<task-name>.prompt)" && osascript -e "display notification \"Task done\" with title \"Codex\""; echo "__TASK_DONE__"' Enter
 
 # OpenClaw: system event (immediate wake)
-tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && openclaw system event --text "Codex done: <summary>" --mode now; echo "__TASK_DONE__"' Enter
+tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "$(cat /tmp/codex-<task-name>.prompt)" && openclaw system event --text "Codex done: <task-name>" --mode now; echo "__TASK_DONE__"' Enter
 ```
 
 ## Monitor Progress
@@ -110,7 +119,7 @@ Periodic check flow:
 Use a done marker in your start command so the monitor can distinguish normal completion from crashes:
 
 ```bash
-tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && echo "__TASK_DONE__"' Enter
+tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "$(cat /tmp/codex-<task-name>.prompt)" && echo "__TASK_DONE__"' Enter
 ```
 
 For Codex tasks, save the session ID to `/tmp/<session>.codex-session-id` when the task starts (see **Codex CLI** above). The monitor reads that file to resume the exact task session.
