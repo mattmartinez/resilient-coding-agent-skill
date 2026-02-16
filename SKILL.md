@@ -114,85 +114,18 @@ Use a done marker in your start command so the monitor can distinguish normal co
 tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "<prompt>" && echo "__TASK_DONE__"' Enter
 ```
 
-For Codex tasks, save the session ID to `/tmp/<session>.codex-session-id` when the task starts (see **Codex CLI** above). The monitor below reads that file to resume the exact task session.
+For Codex tasks, save the session ID to `/tmp/<session>.codex-session-id` when the task starts (see **Codex CLI** above). The monitor script reads that file to resume the exact task session.
 
-Concrete periodic monitor with exponential backoff (Bash required):
+Run the monitor script in the background:
 
 ```bash
-#!/usr/bin/env bash
-SESSION="codex-<task-name>"                     # or claude-/opencode-/pi-<task-name>
-AGENT="codex"                                   # codex | claude | opencode | pi
-CODEX_SESSION_FILE="/tmp/${SESSION}.codex-session-id"
-RETRY_COUNT=0
-START_TS="$(date +%s)"
-DEADLINE_TS=$(( START_TS + 18000 ))             # 5 hours wall-clock
-
-while true; do
-  NOW_TS="$(date +%s)"
-  if [ "$NOW_TS" -ge "$DEADLINE_TS" ]; then
-    echo "Retry timeout reached (5h wall-clock). Stopping monitor."
-    break
-  fi
-
-  INTERVAL=$(( 180 * (2 ** RETRY_COUNT) ))
-
-  if tmux has-session -t "$SESSION" 2>/dev/null; then
-    OUTPUT="$(tmux capture-pane -t "$SESSION" -p -S -120)"
-    RECENT="$(printf '%s\n' "$OUTPUT" | tail -n 40)"
-
-    if printf '%s\n' "$RECENT" | grep -q "__TASK_DONE__"; then
-      break  # task completed normally
-    fi
-
-    PROMPT_BACK=0
-    EXIT_HINT=0
-    printf '%s\n' "$RECENT" | grep -Eq '([$%] $|> $)' && PROMPT_BACK=1
-    printf '%s\n' "$RECENT" | grep -Eiq '(exit code|exited|status [1-9][0-9]*)' && EXIT_HINT=1
-
-    if [ "$PROMPT_BACK" -eq 1 ] || [ "$EXIT_HINT" -eq 1 ]; then
-      RETRY_COUNT=$(( RETRY_COUNT + 1 ))
-
-      case "$AGENT" in
-        codex)
-          # Use the session ID captured for this task. --last can target a different concurrent task.
-          if [ -s "$CODEX_SESSION_FILE" ]; then
-            CODEX_SESSION_ID="$(cat "$CODEX_SESSION_FILE")"
-            tmux send-keys -t "$SESSION" "codex exec resume $CODEX_SESSION_ID \"Continue the previous task\"" Enter
-          else
-            echo "Missing Codex session ID file: $CODEX_SESSION_FILE"
-            break
-          fi
-          ;;
-        claude)
-          tmux send-keys -t "$SESSION" 'claude --resume' Enter
-          ;;
-        opencode)
-          tmux send-keys -t "$SESSION" 'opencode run "Continue"' Enter
-          ;;
-        pi)
-          # Pi CLI has no native resume command; manual restart is required.
-          echo "Pi has no resume command. Manual restart required."
-          ;;
-        *)
-          echo "Unsupported agent: $AGENT"
-          break
-          ;;
-      esac
-    else
-      RETRY_COUNT=0  # agent is running normally, reset backoff
-      INTERVAL=180
-    fi
-  else
-    echo "tmux session $SESSION no longer exists. Stopping monitor."
-    break
-  fi
-  sleep "$INTERVAL"
-done
+./scripts/monitor.sh codex-<task-name> codex
+# or: ./scripts/monitor.sh claude-<task-name> claude
 ```
 
-Retry interval starts at 3 minutes and doubles on each consecutive failure (3m → 6m → 12m → ...). Resets when the agent is running normally. The monitor stops after 5 hours of real wall-clock elapsed time from monitor start.
+The script checks every 3 minutes. On consecutive failures the interval doubles (3m, 6m, 12m, ...) and resets when the agent is running normally. Stops after 5 hours wall-clock.
 
-When starting long tasks, configure this monitor loop in the orchestrator (background shell loop, supervisor, or cron) so recovery runs automatically without manual checks.
+When starting long tasks, run the monitor in the background (via `&`, `nohup`, or the orchestrator's cron) so recovery happens automatically.
 
 ## Recovery After Interruption
 

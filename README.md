@@ -75,13 +75,16 @@ tmux capture-pane -t "$SESSION" -p -S -100
 # If Codex crashes, resume this exact session
 CODEX_SESSION_ID="$(cat "$SESSION_FILE")"
 tmux send-keys -t "$SESSION" "codex exec resume $CODEX_SESSION_ID \"Continue the refactor\"" Enter
+
+# Or run the monitor script for automated crash detection + resume
+./scripts/monitor.sh "$SESSION" codex
 ```
 
 ## Requirements
 
 - `tmux` installed
 - At least one coding agent CLI (codex, claude, opencode, or pi)
-- `bash` for the provided health-monitor loop (uses Bash arithmetic)
+- `bash` for the health-monitor script (`scripts/monitor.sh`)
 
 ## Compatibility
 
