@@ -59,10 +59,10 @@ Plans:
   1. `$TMPDIR/manifest.json` exists at task start and contains task_name, model, project_dir, session_name, pid, tmpdir, started_at, and status fields
   2. All manifest writes use the write-to-tmp + `mv` atomic pattern -- a concurrent reader never sees partial or corrupt JSON
   3. When a task completes, manifest.json is updated with finished_at, exit_code, status (completed/failed), and an output_tail field containing the last 100 lines of output.log
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 03-01: TBD
+- [ ] 03-01-PLAN.md -- Add JSON task manifest to SKILL.md: initial creation, PID update, completion update with output_tail
 
 ### Phase 4: Monitor Rewrite
 **Goal**: A deterministic monitor that detects completion, crashes, and hangs using filesystem signals instead of regex heuristics, with configurable intervals and clean resource management
