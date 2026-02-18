@@ -49,8 +49,8 @@
 |-------------|-------|--------|
 | TS-1 | Phase 2 | Complete |
 | TS-2 | Phase 2 | Complete |
-| TS-3 | Phase 2 | Pending |
-| TS-4 | Phase 2 | Pending |
+| TS-3 | Phase 2 | Complete |
+| TS-4 | Phase 2 | Complete |
 | TS-5 | Phase 1 | Complete |
 | TS-6 | Phase 3 | Pending |
 | TS-7 | Phase 1 | Complete |
