@@ -12,7 +12,7 @@ Rewrite the OpenClaw "Muscles" skill from a multi-agent, heuristic-based system 
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Foundation** - Remove multi-agent dead code, rewrite SKILL.md scope, add model routing, finalize task directory schema
+- [x] **Phase 1: Foundation** - Remove multi-agent dead code, rewrite SKILL.md scope, add model routing, finalize task directory schema
 - [ ] **Phase 2: Detection Infrastructure** - PID tracking, done-file markers, continuous output capture with ANSI stripping
 - [ ] **Phase 3: Structured State** - JSON task manifest with atomic writes and output tail on completion
 - [ ] **Phase 4: Monitor Rewrite** - Three-layer deterministic detection replacing regex heuristics
@@ -33,8 +33,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 2 plans
 
 Plans:
-- [ ] 01-01-PLAN.md -- Rewrite SKILL.md: single-agent, model-aware, aggressive scope, task directory schema
-- [ ] 01-02-PLAN.md -- Simplify monitor.sh: remove agent-type branching, update resume command
+- [x] 01-01-PLAN.md -- Rewrite SKILL.md: single-agent, model-aware, aggressive scope, task directory schema
+- [x] 01-02-PLAN.md -- Simplify monitor.sh: remove agent-type branching, update resume command
 
 ### Phase 2: Detection Infrastructure
 **Goal**: Reliable, filesystem-based task state signals that eliminate regex heuristics -- process liveness via PID, task completion via done-file, and continuous output via pipe-pane
@@ -100,7 +100,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/2 | Not started | - |
+| 1. Foundation | 2/2 | Complete | 2026-02-18 |
 | 2. Detection Infrastructure | 0/2 | Not started | - |
 | 3. Structured State | 0/1 | Not started | - |
 | 4. Monitor Rewrite | 0/2 | Not started | - |
