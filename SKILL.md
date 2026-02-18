@@ -88,11 +88,11 @@ $TMPDIR/                         # mktemp -d, chmod 700
                                  #   Created: Phase 2
 ```
 
-**Phase 1 status:** Only `prompt` exists today. All other files are specified here as the contract that subsequent phases implement. Each file lists its phase of introduction -- do not create files before their designated phase.
+**Status:** Phase 1 created `prompt`. Phase 2 implements `pid`, `output.log`, `done`, and `exit_code` via the shell wrapper and pipe-pane patterns above. The remaining file (`manifest.json`) is created in Phase 3. Each file lists its phase of introduction -- do not create files before their designated phase.
 
 ## Start a Task
 
-Create a tmux session and launch Claude Code with the appropriate model.
+Create a tmux session and launch Claude Code with the appropriate model. The launch sequence uses a shell wrapper that captures the Claude Code PID, waits for completion, and writes structured completion markers.
 
 ```bash
 # Step 1: Create secure temp directory
@@ -101,11 +101,21 @@ TMPDIR=$(mktemp -d) && chmod 700 "$TMPDIR"
 # Step 2: Write prompt to file (use orchestrator's write tool, not echo/shell)
 # File: $TMPDIR/prompt
 
-# Step 3: Launch in tmux (pass TMPDIR via env)
+# Step 3: Create tmux session (pass TMPDIR via env)
 tmux new-session -d -s claude-<task-name> -e "TASK_TMPDIR=$TMPDIR"
+
+# Step 4: Start output capture with ANSI stripping (BEFORE send-keys)
+tmux pipe-pane -t claude-<task-name> -O \
+  "perl -pe 's/\x1b\[[0-9;]*[mGKHfABCDJsu]//g; s/\x1b\][^\x07]*\x07//g; s/\x1b\(B//g; s/\r//g' >> $TMPDIR/output.log"
+
+# Step 5: Launch with wrapper (PID capture + done-file protocol)
 tmux send-keys -t claude-<task-name> \
-  'cd <project-dir> && claude -p --model <model-name> "$(cat $TASK_TMPDIR/prompt)" && echo "__TASK_DONE__"' Enter
+  'cd <project-dir> && claude -p --model <model-name> "$(cat $TASK_TMPDIR/prompt)" & CLAUDE_PID=$!; echo "$CLAUDE_PID" > "$TASK_TMPDIR/pid"; wait $CLAUDE_PID; echo $? > "$TASK_TMPDIR/exit_code.tmp" && mv "$TASK_TMPDIR/exit_code.tmp" "$TASK_TMPDIR/exit_code" && touch "$TASK_TMPDIR/done"' Enter
 ```
+
+**Step 4 -- pipe-pane** is set BEFORE send-keys to guarantee no output is missed. The `-O` flag captures only pane output (not input). The perl chain strips four categories of ANSI escapes: CSI sequences (colors, cursor movement), OSC sequences (window titles), charset selection, and carriage returns (progress bar overwrites).
+
+**Step 5 -- wrapper** runs these steps in sequence: (1) launch Claude Code in background with `&`, (2) capture PID via `$!`, (3) write PID to file immediately, (4) `wait` blocks until Claude exits and preserves exit code, (5) atomic exit_code write (write-to-tmp then `mv`), (6) `touch done` as the completion signal. The exit_code is written BEFORE done to prevent a race condition where the monitor sees done but exit_code does not yet exist.
 
 Replace `<model-name>` with the full model name from the mapping table:
 - Brain sends `opus` --> use `claude-opus-4-6`
@@ -113,29 +123,36 @@ Replace `<model-name>` with the full model name from the mapping table:
 
 Both `-p` and `--model` flags are required. `-p` enables non-interactive (print) mode for fire-and-forget execution. `--model` selects the model tier. Without `-p`, Claude Code enters interactive mode inside tmux, which defeats fire-and-forget execution.
 
-The `&& echo "__TASK_DONE__"` marker is used by the monitor to detect completion. Phase 2 replaces this with done-file detection; preserve this marker until then.
-
 ### Completion Notification
 
-Chain an OpenClaw system event after the agent so the Brain is notified on completion:
+Chain an OpenClaw system event after the agent so the Brain is notified on completion. The notification is placed BEFORE `touch done` so the done-file remains the last thing written regardless of notification success:
 
 ```bash
 tmux send-keys -t claude-<task-name> \
-  'cd <project-dir> && claude -p --model <model-name> "$(cat $TASK_TMPDIR/prompt)" && openclaw system event --text "Claude done: <task-name>" --mode now; echo "__TASK_DONE__"' Enter
+  'cd <project-dir> && claude -p --model <model-name> "$(cat $TASK_TMPDIR/prompt)" & CLAUDE_PID=$!; echo "$CLAUDE_PID" > "$TASK_TMPDIR/pid"; wait $CLAUDE_PID; ECODE=$?; echo "$ECODE" > "$TASK_TMPDIR/exit_code.tmp" && mv "$TASK_TMPDIR/exit_code.tmp" "$TASK_TMPDIR/exit_code"; openclaw system event --text "Claude done: <task-name>" --mode now; touch "$TASK_TMPDIR/done"' Enter
 ```
 
-Use `;` before `echo "__TASK_DONE__"` so the marker prints even if the notification command fails.
+The `openclaw system event` uses `;` (fire-and-forget) so notification failure does not block completion. It runs after exit_code is written but before done is touched.
 
 ## Monitor Progress
+
+Continuous output is captured to `$TMPDIR/output.log` via pipe-pane (set up in Step 4 of the launch sequence). This is the preferred way to read task output:
+
+```bash
+# Read recent output from continuous log (preferred)
+tail -n 50 $TMPDIR/output.log
+```
+
+For ad-hoc checks or manual debugging, tmux capture-pane is still available:
 
 ```bash
 # Check if the session is still running
 tmux has-session -t claude-<task-name> 2>/dev/null && echo "running" || echo "finished/gone"
 
-# Read recent output (last 200 lines)
+# Read recent output (last 200 lines) via tmux
 tmux capture-pane -t claude-<task-name> -p -S -200
 
-# Read the full scrollback
+# Read the full scrollback via tmux
 tmux capture-pane -t claude-<task-name> -p -S -
 ```
 
@@ -147,10 +164,13 @@ Check progress when:
 
 For long-running tasks, use the active monitor script (`scripts/monitor.sh`) instead of checking on demand.
 
-The monitor runs a periodic check loop:
-1. Confirms the tmux session still exists via `tmux has-session`.
-2. Captures recent output and checks for completion markers or crash indicators.
-3. On crash detection, resumes Claude Code via `claude -c` in the same tmux session.
+The monitor runs a periodic check loop using a three-priority detection flow:
+
+1. **Done-file check** -- If `$TASK_TMPDIR/done` exists, the task completed. Read `$TASK_TMPDIR/exit_code` for the result. Exit monitor.
+2. **PID liveness check** -- Read PID from `$TASK_TMPDIR/pid` and test with `kill -0 $PID`. If the process is dead and no done-file exists, the task crashed. Resume via `claude -c` in the same tmux session.
+3. **Session existence** -- If the tmux session is gone (`tmux has-session` fails), the task is lost. Exit monitor.
+
+The done-file is checked FIRST because a completed task may have a dead PID (expected). Only if done-file is absent does a dead PID indicate a crash.
 
 The orchestrator should run this check loop periodically (every 3-5 minutes, via cron or a background timer). On consecutive failures, the monitor doubles the interval (3m, 6m, 12m, ...) and resets when the agent is running normally. The monitor stops after 5 hours wall-clock.
 
@@ -167,9 +187,10 @@ tmux send-keys -t claude-<task-name> 'claude -c' Enter
 
 ## Cleanup
 
-After a task completes, kill the tmux session:
+After a task completes, disable pipe-pane before killing the session. This prevents orphan perl processes that would otherwise hold stale file descriptors:
 
 ```bash
+tmux pipe-pane -t claude-<task-name>  # Disable pipe-pane (no command = disable)
 tmux kill-session -t claude-<task-name>
 ```
 
@@ -195,9 +216,12 @@ Before starting a task:
 
 1. Create secure temp directory (`mktemp -d` + `chmod 700`)
 2. Write prompt to `$TMPDIR/prompt` via orchestrator write tool
-3. Launch Claude Code in tmux with the correct model (`-p --model <model-name>`)
-4. Notify user: task content, session name (`claude-<task-name>`), model used
-5. Monitor via `scripts/monitor.sh` or manual `tmux capture-pane`
+3. Create tmux session with `TASK_TMPDIR` env var
+4. Set up pipe-pane output capture with ANSI stripping
+5. Launch Claude Code with wrapper (PID capture + done-file protocol)
+6. Verify pipe-pane is capturing output (`ls -la $TMPDIR/output.log`)
+7. Notify user: task content, session name (`claude-<task-name>`), model used
+8. Monitor via `scripts/monitor.sh` (done-file/PID detection) or `tail -n 50 $TMPDIR/output.log`
 
 ## Limitations
 
