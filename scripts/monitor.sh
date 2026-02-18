@@ -1,31 +1,20 @@
 #!/usr/bin/env bash
 #
-# Monitor a coding agent running in a tmux session.
+# Monitor a Claude Code session running in tmux.
 # Detects crashes (shell prompt return, exit indicators) and auto-resumes
-# using the agent's native resume command.
+# using `claude -c` (continue most recent conversation).
 #
 # Usage:
-#   ./scripts/monitor.sh <tmux-session> <agent>
+#   ./scripts/monitor.sh <tmux-session>
 #
-#   tmux-session  Name of the tmux session (e.g. codex-refactor)
-#   agent         One of: codex, claude, opencode, pi
-#
-# For Codex, expects a session ID file at /tmp/<session>.codex-session-id
-# (created during task start; see SKILL.md for details).
+#   tmux-session  Name of the tmux session (e.g. task-refactor)
 #
 # Retry: 3min base, doubles on each consecutive failure, resets when agent
 # is running normally. Stops after 5 hours wall-clock.
 
 set -uo pipefail
 
-SESSION="${1:?Usage: monitor.sh <tmux-session> <agent>}"
-AGENT="${2:?Usage: monitor.sh <tmux-session> <agent>}"
-
-# Validate agent at startup
-case "$AGENT" in
-  codex|claude|opencode|pi) ;;
-  *) echo "Unsupported agent: $AGENT (must be codex, claude, opencode, or pi)" >&2; exit 1 ;;
-esac
+SESSION="${1:?Usage: monitor.sh <tmux-session>}"
 
 # Sanitize session name: only allow alphanumeric, dash, underscore, dot
 if ! printf '%s' "$SESSION" | grep -Eq '^[A-Za-z0-9._-]+$'; then
@@ -33,7 +22,6 @@ if ! printf '%s' "$SESSION" | grep -Eq '^[A-Za-z0-9._-]+$'; then
   exit 1
 fi
 
-CODEX_SESSION_FILE="/tmp/${SESSION}.codex-session-id"
 RETRY_COUNT=0
 START_TS="$(date +%s)"
 DEADLINE_TS=$(( START_TS + 18000 ))  # 5 hours wall-clock
@@ -79,36 +67,8 @@ while true; do
 
     if [ "$PROMPT_BACK" -eq 1 ] || [ "$EXIT_HINT" -eq 1 ]; then
       RETRY_COUNT=$(( RETRY_COUNT + 1 ))
-
-      case "$AGENT" in
-        codex)
-          if [ -s "$CODEX_SESSION_FILE" ]; then
-            CODEX_SESSION_ID="$(cat "$CODEX_SESSION_FILE")"
-            # Validate session ID format (UUID-like alphanumeric + dashes)
-            if ! printf '%s' "$CODEX_SESSION_ID" | grep -Eq '^[A-Za-z0-9_-]+$'; then
-              echo "Invalid Codex session ID format: $CODEX_SESSION_ID"
-              break
-            fi
-            echo "Crash detected. Resuming Codex session $CODEX_SESSION_ID (retry #$RETRY_COUNT)"
-            tmux send-keys -t "$SESSION" "codex exec resume ${CODEX_SESSION_ID} \"Continue the previous task\"" Enter
-          else
-            echo "Missing Codex session ID file: $CODEX_SESSION_FILE"
-            break
-          fi
-          ;;
-        claude)
-          echo "Crash detected. Resuming Claude Code (retry #$RETRY_COUNT)"
-          tmux send-keys -t "$SESSION" 'claude --resume' Enter
-          ;;
-        opencode)
-          echo "Crash detected. Resuming OpenCode (retry #$RETRY_COUNT)"
-          tmux send-keys -t "$SESSION" 'opencode run "Continue"' Enter
-          ;;
-        pi)
-          echo "Pi has no resume command. Manual restart required. Stopping monitor."
-          break
-          ;;
-      esac
+      echo "Crash detected. Resuming Claude Code (retry #$RETRY_COUNT)"
+      tmux send-keys -t "$SESSION" 'claude -c' Enter
     else
       RETRY_COUNT=0  # agent is running normally, reset backoff
       INTERVAL=180
