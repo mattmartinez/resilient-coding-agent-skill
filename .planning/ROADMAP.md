@@ -45,11 +45,11 @@ Plans:
   2. When Claude Code exits, `$TMPDIR/done` exists and `$TMPDIR/exit_code` contains the numeric exit code -- written via shell wrapper, not `exec`
   3. From the moment the tmux session is created, all terminal output streams continuously to `$TMPDIR/output.log` via `tmux pipe-pane`
   4. The output.log file contains clean text with ANSI escape sequences stripped -- no color codes, cursor movement, or progress bar artifacts
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 02-01: TBD
-- [ ] 02-02: TBD
+- [ ] 02-01-PLAN.md -- Update SKILL.md: shell wrapper with PID capture, pipe-pane output capture with ANSI stripping, done-file protocol
+- [ ] 02-02-PLAN.md -- Rewrite monitor.sh detection: done-file check + PID liveness replace scrollback regex parsing
 
 ### Phase 3: Structured State
 **Goal**: A machine-readable JSON task manifest that the Brain can query for any task's status, output, and result without parsing ad-hoc files
