@@ -137,14 +137,6 @@ See [SKILL.md](SKILL.md) for the complete 6-step launch sequence with PID captur
 
 ## Install
 
-### Via ClawHub (OpenClaw)
-
-```bash
-clawhub install resilient-coding-agent
-```
-
-### Manual
-
 ```bash
 git clone https://github.com/mattmartinez/resilient-coding-agent-skill.git
 ```
