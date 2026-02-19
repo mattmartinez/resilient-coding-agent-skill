@@ -177,17 +177,40 @@ Check progress when:
 
 ## Health Monitoring
 
-For long-running tasks, use the active monitor script (`scripts/monitor.sh`) instead of checking on demand.
+For long-running tasks, use the active monitor script (`scripts/monitor.sh`) instead of checking on demand. The monitor runs continuously with configurable intervals and handles its own timing -- no cron or external scheduler needed.
 
-The monitor runs a periodic check loop using a three-priority detection flow:
+The monitor uses a three-layer detection flow, checked in this exact priority order every iteration:
 
 1. **Done-file check** -- If `$TASK_TMPDIR/done` exists, the task completed. Read `$TASK_TMPDIR/exit_code` for the result. Exit monitor.
-2. **PID liveness check** -- Read PID from `$TASK_TMPDIR/pid` and test with `kill -0 $PID`. If the process is dead and no done-file exists, the task crashed. Resume via `claude -c` in the same tmux session.
-3. **Session existence** -- If the tmux session is gone (`tmux has-session` fails), the task is lost. Exit monitor.
+2. **PID liveness check** -- Read PID from `$TASK_TMPDIR/pid` and test with `kill -0 $PID`. If the process is dead and no done-file exists, the task crashed. The monitor updates `manifest.json` to `status: "crashed"` with `retry_count` and `last_checked_at`, then resumes via `claude -c` in the same tmux session.
+3. **Output staleness check** -- If the process is alive but `output.log` mtime exceeds the staleness threshold (3x base interval, default 90 seconds), the monitor enters a grace period. On the first stale detection, no action is taken -- only a timestamp is recorded. If output remains stale for the full grace period duration, the monitor treats it as a hang: updates the manifest to `status: "crashed"` and resumes via `claude -c`.
 
-The done-file is checked FIRST because a completed task may have a dead PID (expected). Only if done-file is absent does a dead PID indicate a crash.
+The done-file is checked FIRST because a completed task may have a dead PID (expected). Only if done-file is absent does a dead PID indicate a crash. The staleness check (Layer 3) is only reached when the done-file is absent AND the PID is alive.
 
-The orchestrator should run this check loop periodically (every 3-5 minutes, via cron or a background timer). On consecutive failures, the monitor doubles the interval (3m, 6m, 12m, ...) and resets when the agent is running normally. The monitor stops after 5 hours wall-clock.
+On consecutive failures, the monitor doubles the polling interval (exponential backoff) and resets when the agent produces fresh output. The monitor stops after the configured deadline (default 5 hours wall-clock).
+
+### Configuration
+
+Override monitor behavior by setting environment variables before launching the monitor:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MONITOR_BASE_INTERVAL` | `30` (seconds) | Base polling interval; doubles on each consecutive failure |
+| `MONITOR_MAX_INTERVAL` | `300` (5 minutes) | Maximum polling interval cap |
+| `MONITOR_DEADLINE` | `18000` (5 hours) | Wall-clock deadline; monitor exits after this |
+| `MONITOR_GRACE_PERIOD` | `30` (seconds) | Grace period before acting on stale output |
+
+The staleness threshold is derived as 3x `MONITOR_BASE_INTERVAL` (default: 90 seconds). To adjust hang detection sensitivity, change `MONITOR_BASE_INTERVAL` -- the staleness threshold scales automatically.
+
+### Cleanup and Abandonment
+
+When the deadline is reached or the monitor is terminated (signal, manual kill), an EXIT trap fires automatically:
+
+1. **Manifest update** -- Sets `manifest.json` status to `"abandoned"` with an `abandoned_at` timestamp, unless the task already completed (done-file exists). This guard prevents overwriting a completed task's manifest.
+2. **Notification** -- Fires `openclaw system event` to notify the Brain that the task was abandoned.
+3. **Session cleanup** -- Disables `pipe-pane` and kills the tmux session, preventing orphan processes.
+
+This replaces the need for manual cleanup after deadline exhaustion. All exit paths (deadline, signal, error) trigger the same cleanup sequence.
 
 ## Recovery After Interruption
 
