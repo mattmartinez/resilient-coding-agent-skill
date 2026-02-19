@@ -2,7 +2,13 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Run Claude Code sessions in tmux for fire-and-forget execution with crash recovery, hang detection, model routing, and structured task state.
+An [OpenClaw](https://openclaw.com) skill that runs Claude Code sessions in tmux for fire-and-forget execution with crash recovery, hang detection, model routing, and structured task state.
+
+## What is this?
+
+This is an OpenClaw skill -- a document that the Brain (the orchestrator) reads and follows when it needs to delegate coding work. The Brain doesn't write code itself; it delegates ALL substantive tasks to Claude Code sessions running in isolated tmux sessions. This skill defines the protocol for that delegation: how to launch sessions, capture output, detect failures, and recover automatically.
+
+The Brain reads `SKILL.md` and follows the instructions to create tmux sessions, launch Claude Code with the right model, and start the monitor. The skill handles everything from there.
 
 ## Problem
 
@@ -25,20 +31,35 @@ Decouple Claude Code from the orchestrator by running it in a tmux session with 
 - **Configurable intervals** -- Base interval, max interval, deadline, and grace period via env vars
 - **Clean resource management** -- EXIT trap handles manifest update, notification, and session cleanup
 
-## How It Works
-
-### Task Lifecycle
+## Architecture
 
 ```
-delegate --> create tmpdir + manifest --> launch tmux --> pipe-pane --> Claude Code wrapper
-                                                                          |
-                                          monitor.sh polls:               |
-                                            1. done-file? --> exit        |
-                                            2. PID alive? --> resume      |
-                                            3. output fresh? --> wait     |
-                                                                          v
-                                                              exit_code + manifest update + done
+Brain (orchestrator)
+  |
+  |  reads SKILL.md, follows delegation protocol
+  |
+  v
+tmux session (claude-<task-name>)
+  |-- Claude Code (opus or sonnet)
+  |-- pipe-pane -> output.log (ANSI-stripped)
+  |-- wrapper -> pid, exit_code, manifest.json, done
+  |
+  v
+monitor.sh (watchdog)
+  |-- Layer 1: done-file check
+  |-- Layer 2: PID liveness (kill -0)
+  |-- Layer 3: output staleness (mtime)
+  |-- EXIT trap -> cleanup + notification
 ```
+
+### Delegation Source Tags
+
+If your Brain uses source tags in AGENTS.md to track where work was done, delegated tasks should be tagged:
+
+- `[tmux: opus]` -- delegated to tmux with Opus
+- `[tmux: sonnet]` -- delegated to tmux with Sonnet
+
+Tasks done directly by the main reasoning model (not delegated through this skill) use a different tag per your AGENTS.md configuration.
 
 ### Task Directory
 
@@ -114,12 +135,27 @@ tail -n 50 "$TMPDIR/output.log"
 
 See [SKILL.md](SKILL.md) for the complete 6-step launch sequence with PID capture, manifest updates, and done-file protocol.
 
+## Install
+
+### Via ClawHub (OpenClaw)
+
+```bash
+clawhub install resilient-coding-agent
+```
+
+### Manual
+
+```bash
+git clone https://github.com/mattmartinez/resilient-coding-agent-skill.git
+```
+
 ## Requirements
 
 - **tmux** -- Process isolation and session management
 - **Claude Code CLI** (`claude`) -- The coding agent
 - **jq** -- JSON manifest creation and updates
 - **bash** -- Shell for monitor script
+- **OpenClaw** -- The orchestrator Brain that reads SKILL.md and delegates tasks
 
 ## Compatibility
 
