@@ -74,11 +74,10 @@ Plans:
   3. If the process is alive but output.log mtime exceeds the staleness threshold, the monitor enters a grace period (default 30s) before taking action -- it never kills on the first stale check
   4. Monitor intervals are configurable via MONITOR_BASE_INTERVAL (default 30s), MONITOR_MAX_INTERVAL (default 5m), and MONITOR_DEADLINE (default 5h) environment variables
   5. When the deadline is reached or retries are exhausted, the monitor updates manifest status to "abandoned", fires an `openclaw system event` notification, and cleans up the tmux session via EXIT trap
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 04-01: TBD
-- [ ] 04-02: TBD
+- [ ] 04-01-PLAN.md -- Rewrite monitor.sh with three-layer detection, configurable intervals, manifest updates, EXIT trap; update SKILL.md Health Monitoring docs
 
 ### Phase 5: Brain Integration
 **Goal**: Every task the Brain delegates flows through tmux with full reliability guarantees, and results are retrievable after session cleanup
@@ -103,5 +102,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 1. Foundation | 2/2 | Complete | 2026-02-18 |
 | 2. Detection Infrastructure | 2/2 | Complete | 2026-02-18 |
 | 3. Structured State | 1/1 | Complete | 2026-02-18 |
-| 4. Monitor Rewrite | 0/2 | Not started | - |
+| 4. Monitor Rewrite | 0/1 | Not started | - |
 | 5. Brain Integration | 0/1 | Not started | - |
