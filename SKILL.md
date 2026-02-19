@@ -1,120 +1,176 @@
 ---
 name: resilient-coding-agent
-description: "Run long-running coding agents (Codex, Claude Code, etc.) in tmux sessions that survive orchestrator restarts, with automatic resume on interruption."
+description: "Run Claude Code sessions in tmux for fire-and-forget execution with crash recovery, model routing, and structured task state."
 metadata:
   openclaw:
     emoji: "🛡️"
     requires:
-      bins: [tmux]
-      anyBins: [codex, claude, opencode, pi]
+      bins: [tmux, claude]
 ---
 
 # Resilient Coding Agent
 
-Long-running coding agent tasks (Codex CLI, Claude Code, OpenCode, Pi) are vulnerable to interruption: orchestrator restarts, process crashes, network drops. This skill decouples the coding agent process from the orchestrator using tmux, and leverages agent-native session resume for recovery.
+Long-running coding tasks are vulnerable to interruption: orchestrator restarts, process crashes, network drops. This skill decouples Claude Code from the orchestrator using tmux, enabling fire-and-forget execution with automatic resume on interruption. The orchestrator specifies which model to use; the skill handles session lifecycle, crash recovery, and output capture.
 
-**Placeholders:** `<task-name>` and `<project-dir>` are filled in by the orchestrator. `<task-name>` must match `[a-z0-9-]` only. `<project-dir>` must be a valid existing directory.
+## Placeholders
 
-**Temp directory:** Each task uses a secure temp directory created with `mktemp -d`. Store this path as `<tmpdir>` and use it for all task files (prompt, events, session ID, done marker). This avoids predictable filenames and symlink/race conditions. Example: `TMPDIR=$(mktemp -d)` produces something like `/var/folders/xx/.../T/tmp.aBcDeFgH`.
+- **`<task-name>`** -- Sanitized task identifier. Must match `[a-z0-9-]` only.
+- **`<project-dir>`** -- Valid existing directory where the task executes.
+- **`<model>`** -- Model tier passed by the Brain. Maps to a full model name in the launch command:
 
-**Prompt safety:** Task prompts are never interpolated into shell commands. Instead, write the prompt to a temp file using the orchestrator's `write` tool (no shell involved), then reference it with `"$(cat $TMPDIR/prompt)"` inside the tmux command. The shell treats command substitution output inside double quotes as a single literal argument, preventing injection. This depends on the orchestrator's `write` tool not invoking a shell; OpenClaw's built-in `write` tool meets this requirement.
+| Brain sends | CLI receives |
+|-------------|-------------|
+| `opus` | `claude-opus-4-6` |
+| `sonnet` | `claude-sonnet-4-6` |
 
-**Sensitive output:** tmux scrollback and event log files may contain secrets or API keys from agent output. On shared machines, restrict file permissions (`chmod 600`) and clean up temp directories after task completion.
+Full model names are used for determinism. Aliases auto-resolve to the latest version, which could change behavior unexpectedly.
 
-## Prerequisites
+## Temp Directory and Prompt Safety
 
-This skill assumes the orchestrator is already configured to use coding agent CLIs (Codex, Claude Code, etc.) for coding tasks instead of native sessions. If the orchestrator is still using `sessions_spawn` for coding work, configure it to prefer coding agents first (e.g., via AGENTS.md or equivalent). See the `coding-agent` skill for setup.
+Each task uses a secure temp directory created with `mktemp -d`. Store this path and use it for all task files (prompt, events, session state). This avoids predictable filenames and symlink/race conditions.
+
+```bash
+TMPDIR=$(mktemp -d)
+chmod 700 "$TMPDIR"
+```
+
+**Prompt safety:** Task prompts are never interpolated into shell commands. Instead, write the prompt to a temp file using the orchestrator's `write` tool (no shell involved), then reference it with `"$(cat $TASK_TMPDIR/prompt)"` inside the tmux command. The shell treats command substitution output inside double quotes as a single literal argument, preventing injection. This depends on the orchestrator's `write` tool not invoking a shell; OpenClaw's built-in `write` tool meets this requirement.
+
+**Sensitive output:** tmux scrollback and log files may contain secrets or API keys from agent output. On shared machines, restrict file permissions (`chmod 600`) and clean up temp directories after task completion.
 
 ## When to Use This
 
-Use this pattern when:
-- The task is expected to take **more than 5 minutes**
-- The orchestrator might restart during execution
-- You want fire-and-forget execution with completion notification
+Use this skill for ALL tasks that are not pure conversational chat. This includes:
+- Coding, debugging, refactoring, and architecture work
+- File exploration, search, and analysis
+- Test writing and test debugging
+- Documentation generation
+- Code review and security analysis
+- Any reasoning or investigation task
 
-For quick tasks under 5 minutes, running the agent directly is fine.
+You are NOT a coding agent. Do not attempt to do coding work directly.
+Delegate ALL substantive work through this skill, regardless of expected duration.
+
+## Task Directory Schema
+
+Every task operates within a secure temp directory. The following layout is the canonical specification -- all phases build on this convention.
+
+```
+$TMPDIR/                         # mktemp -d, chmod 700
+  prompt                         # Task instructions
+                                 #   Written by: orchestrator write tool
+                                 #   Read by: Claude Code via $(cat)
+                                 #   Created: Phase 1 (existing)
+
+  pid                            # Claude Code child process PID
+                                 #   Written by: task wrapper (pgrep)
+                                 #   Read by: monitor.sh (kill -0)
+                                 #   Created: Phase 2
+
+  output.log                     # Continuous output capture
+                                 #   Written by: tmux pipe-pane
+                                 #   Read by: Brain (tail -n 50), monitor (mtime)
+                                 #   Created: Phase 2
+
+  manifest.json                  # Structured task state (JSON)
+                                 #   Written by: orchestrator (initial) + task wrapper (PID, completion)
+                                 #   Read by: Brain (jq -r '.status')
+                                 #   Created: Phase 3 (active)
+
+  done                           # Completion marker (presence = complete)
+                                 #   Written by: task wrapper on exit
+                                 #   Read by: monitor.sh ([ -f done ])
+                                 #   Created: Phase 2
+
+  exit_code                      # Process exit code (numeric string)
+                                 #   Written by: task wrapper (echo $?)
+                                 #   Read by: monitor.sh, manifest updater
+                                 #   Created: Phase 2
+```
+
+**Status:** Phase 1 created `prompt`. Phase 2 implements `pid`, `output.log`, `done`, and `exit_code` via the shell wrapper and pipe-pane patterns. Phase 3 adds `manifest.json` -- created by the orchestrator in Step 3 (initial fields with pid=0), updated by the wrapper in Step 6 (real PID after `$!` capture, then completion fields before `touch done`). All task directory files are now active.
 
 ## Start a Task
 
-Create a tmux session with a descriptive name. Use the agent prefix (`codex-`, `claude-`, etc.) for easy identification.
-
-### Codex CLI
+Create a tmux session and launch Claude Code with the appropriate model. The launch sequence uses a shell wrapper that captures the Claude Code PID, waits for completion, and writes structured completion markers.
 
 ```bash
 # Step 1: Create secure temp directory
-TMPDIR=$(mktemp -d)
-chmod 700 "$TMPDIR"
+TMPDIR=$(mktemp -d) && chmod 700 "$TMPDIR"
 
 # Step 2: Write prompt to file (use orchestrator's write tool, not echo/shell)
 # File: $TMPDIR/prompt
 
-# Step 3: Launch in tmux (pass TMPDIR via env)
-tmux new-session -d -s codex-<task-name> -e "TASK_TMPDIR=$TMPDIR"
-tmux send-keys -t codex-<task-name> 'cd <project-dir> && set -o pipefail && codex exec --full-auto --json "$(cat $TASK_TMPDIR/prompt)" | tee $TASK_TMPDIR/events.jsonl && echo "__TASK_DONE__"' Enter
+# Step 3: Create initial manifest
+jq -n \
+  --arg task_name "<task-name>" \
+  --arg model "<model-name>" \
+  --arg project_dir "<project-dir>" \
+  --arg session_name "claude-<task-name>" \
+  --arg pid "0" \
+  --arg tmpdir "$TMPDIR" \
+  --arg started_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+  --arg status "running" \
+  '{task_name: $task_name, model: $model, project_dir: $project_dir, session_name: $session_name, pid: ($pid | tonumber), tmpdir: $tmpdir, started_at: $started_at, status: $status}' \
+  > "$TMPDIR/manifest.json.tmp" && mv "$TMPDIR/manifest.json.tmp" "$TMPDIR/manifest.json"
 
-# Step 4: Capture this task's Codex session ID; resume --last is unsafe with concurrent tasks.
-# Uses jq for reliable JSON parsing (falls back to grep if jq unavailable).
-until [ -s "$TMPDIR/codex-session-id" ]; do
-  if command -v jq &>/dev/null; then
-    jq -r 'select(.thread_id) | .thread_id' "$TMPDIR/events.jsonl" 2>/dev/null | head -n 1 > "$TMPDIR/codex-session-id"
-  else
-    grep -oE '"thread_id":"[^"]+"' "$TMPDIR/events.jsonl" 2>/dev/null | head -n 1 | cut -d'"' -f4 > "$TMPDIR/codex-session-id"
-  fi
-  sleep 1
-done
-```
-
-### Claude Code
-
-```bash
-# Create secure temp directory and write prompt to $TMPDIR/prompt first
-TMPDIR=$(mktemp -d) && chmod 700 "$TMPDIR"
+# Step 4: Create tmux session (pass TMPDIR via env)
 tmux new-session -d -s claude-<task-name> -e "TASK_TMPDIR=$TMPDIR"
-tmux send-keys -t claude-<task-name> 'cd <project-dir> && claude -p "$(cat $TASK_TMPDIR/prompt)" && echo "__TASK_DONE__"' Enter
+
+# Step 5: Start output capture with ANSI stripping (BEFORE send-keys)
+tmux pipe-pane -t claude-<task-name> -O \
+  "perl -pe 's/\x1b\[[0-9;]*[mGKHfABCDJsu]//g; s/\x1b\][^\x07]*\x07//g; s/\x1b\(B//g; s/\r//g' >> $TMPDIR/output.log"
+
+# Step 6: Launch with wrapper (PID capture + manifest updates + done-file protocol)
+tmux send-keys -t claude-<task-name> \
+  'cd <project-dir> && claude -p --model <model-name> "$(cat $TASK_TMPDIR/prompt)" & CLAUDE_PID=$!; echo "$CLAUDE_PID" > "$TASK_TMPDIR/pid"; jq --argjson pid "$CLAUDE_PID" ".pid = \$pid" "$TASK_TMPDIR/manifest.json" > "$TASK_TMPDIR/manifest.json.tmp" && mv "$TASK_TMPDIR/manifest.json.tmp" "$TASK_TMPDIR/manifest.json"; wait $CLAUDE_PID; ECODE=$?; echo "$ECODE" > "$TASK_TMPDIR/exit_code.tmp" && mv "$TASK_TMPDIR/exit_code.tmp" "$TASK_TMPDIR/exit_code"; if [ "$ECODE" -eq 0 ]; then STATUS=completed; else STATUS=failed; fi; jq --arg finished_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --argjson exit_code "$ECODE" --arg status "$STATUS" --arg output_tail "$(tail -n 100 "$TASK_TMPDIR/output.log" 2>/dev/null || echo "")" ". + {finished_at: \$finished_at, exit_code: \$exit_code, status: \$status, output_tail: \$output_tail}" "$TASK_TMPDIR/manifest.json" > "$TASK_TMPDIR/manifest.json.tmp" && mv "$TASK_TMPDIR/manifest.json.tmp" "$TASK_TMPDIR/manifest.json"; touch "$TASK_TMPDIR/done"' Enter
 ```
 
-### OpenCode / Pi
+**Step 3 -- manifest** creates `manifest.json` with all eight fields before the tmux session exists. The `jq -n` flag generates JSON from scratch. PID is set to `0` (placeholder) because the real PID is not known until after background launch. The `--arg pid "0"` + `($pid | tonumber)` pattern produces a JSON number (not string). The atomic write-to-tmp + `mv` pattern ensures the Brain never reads a partial file.
+
+**Step 5 -- pipe-pane** is set BEFORE send-keys to guarantee no output is missed. The `-O` flag captures only pane output (not input). The perl chain strips four categories of ANSI escapes: CSI sequences (colors, cursor movement), OSC sequences (window titles), charset selection, and carriage returns (progress bar overwrites).
+
+**Step 6 -- wrapper** runs these steps in sequence: (1) launch Claude Code in background with `&`, (2) capture PID via `$!`, (3) write PID to file immediately, (4) update manifest with real PID via `jq --argjson`, (5) `wait` blocks until Claude exits and preserves exit code, (6) atomic exit_code write (write-to-tmp then `mv`), (7) determine status (completed/failed) from exit code, (8) update manifest with `finished_at`, `exit_code`, `status`, and `output_tail` via `jq` merge, (9) `touch done` as the completion signal. The exit_code and manifest completion update are both written BEFORE done to prevent a race condition where the monitor sees done but results do not yet exist. Inside the single-quoted send-keys string, jq variable references use `\$varname` so the pane shell passes literal `$` to jq.
+
+Replace `<model-name>` with the full model name from the mapping table:
+- Brain sends `opus` --> use `claude-opus-4-6`
+- Brain sends `sonnet` --> use `claude-sonnet-4-6`
+
+Both `-p` and `--model` flags are required. `-p` enables non-interactive (print) mode for fire-and-forget execution. `--model` selects the model tier. Without `-p`, Claude Code enters interactive mode inside tmux, which defeats fire-and-forget execution.
+
+### Completion Notification
+
+Chain an OpenClaw system event after the agent so the Brain is notified on completion. The notification is placed BEFORE `touch done` so the done-file remains the last thing written regardless of notification success:
 
 ```bash
-# Create secure temp directory and write prompt to $TMPDIR/prompt first
-TMPDIR=$(mktemp -d) && chmod 700 "$TMPDIR"
-
-# OpenCode
-tmux new-session -d -s opencode-<task-name> -e "TASK_TMPDIR=$TMPDIR"
-tmux send-keys -t opencode-<task-name> 'cd <project-dir> && opencode run "$(cat $TASK_TMPDIR/prompt)" && echo "__TASK_DONE__"' Enter
-
-# Pi (separate temp dir)
-TMPDIR=$(mktemp -d) && chmod 700 "$TMPDIR"
-tmux new-session -d -s pi-<task-name> -e "TASK_TMPDIR=$TMPDIR"
-tmux send-keys -t pi-<task-name> 'cd <project-dir> && pi -p "$(cat $TASK_TMPDIR/prompt)" && echo "__TASK_DONE__"' Enter
+tmux send-keys -t claude-<task-name> \
+  'cd <project-dir> && claude -p --model <model-name> "$(cat $TASK_TMPDIR/prompt)" & CLAUDE_PID=$!; echo "$CLAUDE_PID" > "$TASK_TMPDIR/pid"; jq --argjson pid "$CLAUDE_PID" ".pid = \$pid" "$TASK_TMPDIR/manifest.json" > "$TASK_TMPDIR/manifest.json.tmp" && mv "$TASK_TMPDIR/manifest.json.tmp" "$TASK_TMPDIR/manifest.json"; wait $CLAUDE_PID; ECODE=$?; echo "$ECODE" > "$TASK_TMPDIR/exit_code.tmp" && mv "$TASK_TMPDIR/exit_code.tmp" "$TASK_TMPDIR/exit_code"; if [ "$ECODE" -eq 0 ]; then STATUS=completed; else STATUS=failed; fi; jq --arg finished_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --argjson exit_code "$ECODE" --arg status "$STATUS" --arg output_tail "$(tail -n 100 "$TASK_TMPDIR/output.log" 2>/dev/null || echo "")" ". + {finished_at: \$finished_at, exit_code: \$exit_code, status: \$status, output_tail: \$output_tail}" "$TASK_TMPDIR/manifest.json" > "$TASK_TMPDIR/manifest.json.tmp" && mv "$TASK_TMPDIR/manifest.json.tmp" "$TASK_TMPDIR/manifest.json"; openclaw system event --text "Claude done: <task-name>" --mode now; touch "$TASK_TMPDIR/done"' Enter
 ```
 
-### Completion Notification (Optional)
-
-Chain a notification command after the agent so you know when it finishes. Use `;` before `echo "__TASK_DONE__"` so the marker prints even if the notification command fails:
-
-```bash
-# Generic: touch a marker file
-tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "$(cat $TASK_TMPDIR/prompt)" && touch $TASK_TMPDIR/done; echo "__TASK_DONE__"' Enter
-
-# macOS: system notification
-tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "$(cat $TASK_TMPDIR/prompt)" && osascript -e "display notification \"Task done\" with title \"Codex\""; echo "__TASK_DONE__"' Enter
-
-# OpenClaw: system event (immediate wake)
-tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "$(cat $TASK_TMPDIR/prompt)" && openclaw system event --text "Codex done: <task-name>" --mode now; echo "__TASK_DONE__"' Enter
-```
+The `openclaw system event` uses `;` (fire-and-forget) so notification failure does not block completion. The ordering is: exit_code write -> manifest completion update -> openclaw event -> touch done.
 
 ## Monitor Progress
 
+Continuous output is captured to `$TMPDIR/output.log` via pipe-pane (set up in Step 4 of the launch sequence). This is the preferred way to read task output:
+
+```bash
+# Read recent output from continuous log (preferred)
+tail -n 50 $TMPDIR/output.log
+```
+
+Both `output.log` and `manifest.json` persist after the tmux session is killed -- `$TMPDIR` is created outside the session and is not deleted by monitor cleanup or `tmux kill-session`. This means result retrieval via `tail -n 50 $TMPDIR/output.log` or `jq -r '.output_tail' $TMPDIR/manifest.json` works even after the session is gone.
+
+For ad-hoc checks or manual debugging, tmux capture-pane is still available:
+
 ```bash
 # Check if the session is still running
-tmux has-session -t codex-<task-name> 2>/dev/null && echo "running" || echo "finished/gone"
+tmux has-session -t claude-<task-name> 2>/dev/null && echo "running" || echo "finished/gone"
 
-# Read recent output (last 200 lines)
-tmux capture-pane -t codex-<task-name> -p -S -200
+# Read recent output (last 200 lines) via tmux
+tmux capture-pane -t claude-<task-name> -p -S -200
 
-# Read the full scrollback
-tmux capture-pane -t codex-<task-name> -p -S -
+# Read the full scrollback via tmux
+tmux capture-pane -t claude-<task-name> -p -S -
 ```
 
 Check progress when:
@@ -123,80 +179,101 @@ Check progress when:
 
 ## Health Monitoring
 
-For long-running tasks, use an active monitor loop instead of only checking on demand.
+Use the active monitor script (`scripts/monitor.sh`) for every task. The monitor runs continuously with configurable intervals and handles its own timing -- no cron or external scheduler needed.
 
-Periodic check flow:
-1. Run `tmux has-session -t <agent-task>` to confirm the tmux session still exists.
-2. Run `tmux capture-pane -t <agent-task> -p -S -<N>` to capture recent output.
-3. Detect likely agent exit by checking the last `N` lines for:
-   - Shell prompt returned (for example, a line ending in `$ `, `% `, or `> `)
-   - Exit indicators (`exit code`, `status <non-zero>`, `exited`)
-   - No completion marker (`__TASK_DONE__`)
-4. If crash is detected, run the agent-native resume command in the same tmux session.
+The monitor uses a three-layer detection flow, checked in this exact priority order every iteration:
 
-Use a done marker in your start command so the monitor can distinguish normal completion from crashes:
+1. **Done-file check** -- If `$TASK_TMPDIR/done` exists, the task completed. Read `$TASK_TMPDIR/exit_code` for the result. Exit monitor.
+2. **PID liveness check** -- Read PID from `$TASK_TMPDIR/pid` and test with `kill -0 $PID`. If the process is dead and no done-file exists, the task crashed. The monitor updates `manifest.json` to `status: "crashed"` with `retry_count` and `last_checked_at`, then resumes via `claude -c` in the same tmux session.
+3. **Output staleness check** -- If the process is alive but `output.log` mtime exceeds the staleness threshold (3x base interval, default 90 seconds), the monitor enters a grace period. On the first stale detection, no action is taken -- only a timestamp is recorded. If output remains stale for the full grace period duration, the monitor treats it as a hang: updates the manifest to `status: "crashed"` and resumes via `claude -c`.
 
-```bash
-tmux send-keys -t codex-<task-name> 'cd <project-dir> && codex exec --full-auto "$(cat $TASK_TMPDIR/prompt)" && echo "__TASK_DONE__"' Enter
-```
+The done-file is checked FIRST because a completed task may have a dead PID (expected). Only if done-file is absent does a dead PID indicate a crash. The staleness check (Layer 3) is only reached when the done-file is absent AND the PID is alive.
 
-For Codex tasks, save the session ID to `$TMPDIR/codex-session-id` when the task starts (see **Codex CLI** above). The monitor reads that file to resume the exact task session.
+On consecutive failures, the monitor doubles the polling interval (exponential backoff) and resets when the agent produces fresh output. The monitor stops after the configured deadline (default 5 hours wall-clock).
 
-The orchestrator should run this check loop periodically (every 3-5 minutes, via cron or a background timer). On consecutive failures, double the interval (3m, 6m, 12m, ...) and reset when the agent is running normally. Stop after 5 hours wall-clock.
+### Configuration
+
+Override monitor behavior by setting environment variables before launching the monitor:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MONITOR_BASE_INTERVAL` | `30` (seconds) | Base polling interval; doubles on each consecutive failure |
+| `MONITOR_MAX_INTERVAL` | `300` (5 minutes) | Maximum polling interval cap |
+| `MONITOR_DEADLINE` | `18000` (5 hours) | Wall-clock deadline; monitor exits after this |
+| `MONITOR_GRACE_PERIOD` | `30` (seconds) | Grace period before acting on stale output |
+
+The staleness threshold is derived as 3x `MONITOR_BASE_INTERVAL` (default: 90 seconds). To adjust hang detection sensitivity, change `MONITOR_BASE_INTERVAL` -- the staleness threshold scales automatically.
+
+### Cleanup and Abandonment
+
+When the deadline is reached or the monitor is terminated (signal, manual kill), an EXIT trap fires automatically:
+
+1. **Manifest update** -- Sets `manifest.json` status to `"abandoned"` with an `abandoned_at` timestamp, unless the task already completed (done-file exists). This guard prevents overwriting a completed task's manifest.
+2. **Notification** -- Fires `openclaw system event` to notify the Brain that the task was abandoned.
+3. **Session cleanup** -- Disables `pipe-pane` and kills the tmux session, preventing orphan processes.
+
+This replaces the need for manual cleanup after deadline exhaustion. All exit paths (deadline, signal, error) trigger the same cleanup sequence.
 
 ## Recovery After Interruption
 
-For automated crash detection and retries, use **Health Monitoring** above.
-Keep this section as a manual fallback when you need to intervene directly:
+For automated crash detection and retries, use **Health Monitoring** above. Keep this section as a manual fallback when you need to intervene directly:
 
 ```bash
-# Codex (prefer explicit session ID from $TMPDIR/codex-session-id)
-tmux send-keys -t codex-<task-name> 'codex exec resume <session-id> "Continue the previous task"' Enter
-
-# Claude Code
-tmux send-keys -t claude-<task-name> 'claude --resume' Enter
-
-# OpenCode
-tmux send-keys -t opencode-<task-name> 'opencode run "Continue"' Enter
-
-# Pi: no native resume; re-run the task prompt manually
+# Resume the most recent Claude Code session in the working directory
+tmux send-keys -t claude-<task-name> 'claude -c' Enter
 ```
+
+`claude -c` continues the most recent conversation in the current working directory. This is the correct resume command for Claude Code sessions running inside tmux, where only one conversation exists per session.
 
 ## Cleanup
 
-After a task completes, kill the tmux session:
+After a task completes, disable pipe-pane before killing the session. This prevents orphan perl processes that would otherwise hold stale file descriptors:
 
 ```bash
-tmux kill-session -t codex-<task-name>
+tmux pipe-pane -t claude-<task-name>  # Disable pipe-pane (no command = disable)
+tmux kill-session -t claude-<task-name>
 ```
 
 List all coding agent tmux sessions:
 
 ```bash
-tmux list-sessions 2>/dev/null | grep -E '^(codex|claude|opencode|pi)-'
+tmux list-sessions 2>/dev/null | grep -E '^claude-'
 ```
 
 ## Naming Convention
 
-Tmux sessions use the pattern `<agent>-<task-name>`:
+Tmux sessions use the pattern `claude-<task-name>`:
 
-- `codex-refactor-auth`
+- `claude-refactor-auth`
 - `claude-review-pr-42`
-- `codex-bus-sim-physics`
+- `claude-fix-api-tests`
 
-Keep names short, lowercase, hyphen-separated.
+Keep names short, lowercase, hyphen-separated. The `claude-` prefix identifies sessions managed by this skill.
 
 ## Checklist
 
-Before starting a long task:
+Before starting a task:
 
-1. Pick tmux over direct execution (if task > 5 min)
-2. Name the tmux session with the agent prefix
-3. Optionally chain a completion notification
-4. Tell the user: task content, tmux session name, estimated duration
-5. Monitor via `tmux capture-pane` on request
+1. Create secure temp directory (`mktemp -d` + `chmod 700`)
+2. Write prompt to `$TMPDIR/prompt` via orchestrator write tool
+3. Create initial `manifest.json` with `jq -n` (all eight fields, pid=0 placeholder)
+4. Create tmux session with `TASK_TMPDIR` env var
+5. Set up pipe-pane output capture with ANSI stripping
+6. Launch Claude Code with wrapper (PID capture + manifest updates + done-file protocol)
+7. Verify pipe-pane is capturing output (`ls -la $TMPDIR/output.log`)
+8. Notify user: task content, session name (`claude-<task-name>`), model used
+9. Launch monitor: `scripts/monitor.sh` (handles done-file detection, PID liveness, and staleness -- mandatory for every task)
 
 ## Limitations
 
-- tmux sessions do not survive a **machine reboot** (tmux itself is killed). For reboot-resilient tasks, the coding agent's native resume (`codex exec resume <session-id>`, `claude --resume`) is the recovery path.
-- Interactive approval prompts inside tmux require manual `tmux attach` or `tmux send-keys`. Use `--full-auto` / `--yolo` / `-p` flags when possible.
+- tmux sessions do not survive a **machine reboot** (tmux itself is killed). For reboot recovery, `claude -c` in the project directory will resume the most recent conversation.
+- Interactive approval prompts inside tmux require manual `tmux attach` or `tmux send-keys`. Use `-p` flag for non-interactive mode.
+
+## Prerequisites
+
+This skill requires:
+- **tmux** -- Process isolation and session management
+- **Claude Code CLI** (`claude`) -- The coding agent that executes tasks
+- **jq** -- JSON manifest creation and updates (available at /usr/bin/jq on macOS)
+
+The orchestrator must be configured to delegate coding tasks through this skill instead of attempting them directly. SKILL.md is the orchestrator's interface -- it reads this document and follows the instructions.
