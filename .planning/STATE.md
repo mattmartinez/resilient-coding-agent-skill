@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-18)
 
 **Core value:** Every coding task the Brain delegates must reliably execute in an isolated Claude Code session, with the right model for the job, crash recovery, output capture, and structured results.
-**Current focus:** Phase 3: Structured State
+**Current focus:** Phase 4: Monitor Rewrite
 
 ## Current Position
 
-Phase: 3 of 5 (Structured State)
+Phase: 4 of 5 (Monitor Rewrite)
 Plan: 1 of 1 in current phase
 Status: Complete
-Last activity: 2026-02-18 -- Completed 03-01-PLAN.md
+Last activity: 2026-02-19 -- Completed 04-01-PLAN.md
 
-Progress: [######....] 60%
+Progress: [########..] 80%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 5
-- Average duration: 1.6min
-- Total execution time: 0.13 hours
+- Total plans completed: 6
+- Average duration: 1.7min
+- Total execution time: 0.17 hours
 
 **By Phase:**
 
@@ -32,9 +32,10 @@ Progress: [######....] 60%
 | Phase 02 P01 | 1 task | 2min | 2min |
 | Phase 02 P02 | 1 task | 1min | 1min |
 | Phase 03 P01 | 1 task | 2min | 2min |
+| Phase 04 P01 | 2 tasks | 2min | 2min |
 
 **Recent Trend:**
-- Last 5 plans: 2min, 1min, 2min, 1min, 2min
+- Last 5 plans: 1min, 2min, 1min, 2min, 2min
 - Trend: Consistent
 
 *Updated after each plan completion*
@@ -65,6 +66,10 @@ Recent decisions affecting current work:
 - [Phase 03 P01]: PID=0 placeholder in initial manifest, updated by wrapper after $! -- two-step because real PID unknown until background launch
 - [Phase 03 P01]: jq variable refs use \$varname inside single-quoted send-keys -- pane shell passes literal $ to jq
 - [Phase 03 P01]: output_tail captures last 100 lines with 2>/dev/null fallback -- safe if output.log missing
+- [Phase 04 P01]: MONITOR_GRACE_PERIOD as separate env var (default 30s) rather than derived from BASE_INTERVAL
+- [Phase 04 P01]: Staleness threshold derived as 3x MONITOR_BASE_INTERVAL -- scales automatically when base changes
+- [Phase 04 P01]: get_mtime fallback returns 0 (epoch) for missing files -- safe failure mode treats missing as infinitely stale
+- [Phase 04 P01]: PID staleness after resume accepted as known limitation -- bounded by RETRY_COUNT and DEADLINE
 
 ### Pending Todos
 
@@ -72,12 +77,13 @@ None yet.
 
 ### Blockers/Concerns
 
-- macOS vs Linux `stat` portability needs platform-detection helper (affects Phase 4)
+- macOS vs Linux `stat` portability needs platform-detection helper -- RESOLVED: get_mtime() helper in monitor.sh (Phase 4 P01)
 - ANSI stripping completeness -- resolved: perl 4-pattern chain covers CSI, OSC, charset, carriage returns (Phase 2 P01)
-- Heartbeat threshold tuning -- 3-minute default may be too aggressive for long reasoning steps (configurable, validate Phase 4)
+- Heartbeat threshold tuning -- RESOLVED: configurable via MONITOR_BASE_INTERVAL, staleness = 3x base + grace period (Phase 4 P01)
+- PID staleness after resume: `claude -c` creates new process but PID file retains old PID. Bounded by RETRY_COUNT and DEADLINE. Potential Phase 5 work.
 
 ## Session Continuity
 
-Last session: 2026-02-18
-Stopped at: Completed 03-01-PLAN.md -- SKILL.md updated with manifest.json creation, PID update, and completion update
+Last session: 2026-02-19
+Stopped at: Completed 04-01-PLAN.md -- monitor.sh rewritten with three-layer detection, SKILL.md updated with configuration docs
 Resume file: None
