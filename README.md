@@ -1,103 +1,138 @@
 # Resilient Coding Agent
 
-[![ClawHub](https://img.shields.io/badge/ClawHub-resilient--coding--agent-blue)](https://clawhub.com/cosformula/resilient-coding-agent)
-[![Version](https://img.shields.io/badge/version-0.2.0-green)](https://clawhub.com/cosformula/resilient-coding-agent)
-[![GitHub stars](https://img.shields.io/github/stars/cosformula/resilient-coding-agent-skill)](https://github.com/cosformula/resilient-coding-agent-skill)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/cosformula/resilient-coding-agent-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/cosformula/resilient-coding-agent-skill/actions/workflows/ci.yml)
-[![Publish](https://github.com/cosformula/resilient-coding-agent-skill/actions/workflows/clawhub-publish.yml/badge.svg)](https://github.com/cosformula/resilient-coding-agent-skill/actions/workflows/clawhub-publish.yml)
 
-Run long-running coding agents (Codex CLI, Claude Code, OpenCode, Pi) in tmux sessions that survive orchestrator restarts, with periodic health checks and automatic resume on interruption.
+Run Claude Code sessions in tmux for fire-and-forget execution with crash recovery, hang detection, model routing, and structured task state.
 
 ## Problem
 
-AI coding agents running long tasks (refactors, full codebase reviews, complex builds) get killed when the orchestrator process restarts. You lose progress, get no completion notification, and have to start over.
+AI coding tasks (refactors, reviews, complex builds) get killed when the orchestrator process restarts. You lose progress, get no completion notification, and have to start over. Detecting whether a task completed, crashed, or is stuck requires fragile regex parsing of terminal output.
 
 ## Solution
 
-Decouple the coding agent from the orchestrator by running it in a tmux session. The agent keeps running regardless of what happens to the orchestrator. A monitor loop can check health with `tmux has-session` and `tmux capture-pane`, detect likely crashes, and trigger native resume commands in the same tmux session.
+Decouple Claude Code from the orchestrator by running it in a tmux session with a deterministic monitoring stack. The agent keeps running regardless of what happens to the orchestrator. A three-layer monitor detects completion, crashes, and hangs using filesystem signals instead of heuristics -- and automatically resumes crashed sessions.
 
 ## Features
 
-- Runs coding agents in `tmux` sessions so tasks survive orchestrator restarts
-- Supports periodic health monitoring (`tmux has-session` + `tmux capture-pane`)
-- Detects likely agent exits from shell-prompt return and exit indicators in recent output
-- Auto-recovers with native resume commands (`codex exec resume <session-id>`, `claude --resume`, `opencode run "Continue"`)
-- Supports completion notifications via marker files, system events, or webhooks
+- **Fire-and-forget execution** -- Claude Code runs in tmux, survives orchestrator restarts
+- **Model routing** -- Brain passes `opus` or `sonnet`, skill maps to full model names (`claude-opus-4-6`, `claude-sonnet-4-6`)
+- **Three-layer monitoring** -- Done-file check, PID liveness, output staleness (in strict priority order)
+- **Automatic crash recovery** -- Dead process detected via `kill -0`, resumed via `claude -c`
+- **Hang detection** -- Alive-but-stuck processes detected via `output.log` mtime with grace period
+- **Structured task state** -- `manifest.json` with task metadata, status, timestamps, and output tail
+- **Atomic writes** -- All manifest updates use write-to-tmp + `mv` to prevent partial reads
+- **Continuous output capture** -- `tmux pipe-pane` streams all output with ANSI stripping
+- **Configurable intervals** -- Base interval, max interval, deadline, and grace period via env vars
+- **Clean resource management** -- EXIT trap handles manifest update, notification, and session cleanup
 
-## Supported Agents
+## How It Works
 
-- **Codex CLI** (with `codex exec resume` for recovery)
-- **Claude Code** (with `claude --resume` for recovery)
-- **OpenCode**
-- **Pi Coding Agent**
+### Task Lifecycle
 
-## Install
-
-### Via npx skills (any agent)
-
-```bash
-npx skills add cosformula/resilient-coding-agent-skill
+```
+delegate --> create tmpdir + manifest --> launch tmux --> pipe-pane --> Claude Code wrapper
+                                                                          |
+                                          monitor.sh polls:               |
+                                            1. done-file? --> exit        |
+                                            2. PID alive? --> resume      |
+                                            3. output fresh? --> wait     |
+                                                                          v
+                                                              exit_code + manifest update + done
 ```
 
-### Via ClawHub (OpenClaw)
+### Task Directory
 
-```bash
-clawhub install resilient-coding-agent
+Every task operates within a secure temp directory (`mktemp -d`, `chmod 700`):
+
+```
+$TMPDIR/
+  prompt           # Task instructions (written by orchestrator)
+  pid              # Claude Code child PID (written by wrapper)
+  output.log       # Continuous output via pipe-pane (ANSI-stripped)
+  manifest.json    # Structured task state (JSON, atomic updates)
+  done             # Completion marker (presence = complete)
+  exit_code        # Process exit code (numeric string)
 ```
 
-### Manual
+### Monitor Detection Layers
 
-```bash
-git clone https://github.com/cosformula/resilient-coding-agent-skill.git
-```
+The monitor (`scripts/monitor.sh`) checks in strict priority order every iteration:
+
+1. **Done-file** -- If `$TMPDIR/done` exists, the task completed. Read exit code and exit.
+2. **PID liveness** -- If `kill -0 $PID` fails (process dead, no done-file), the task crashed. Resume via `claude -c`.
+3. **Output staleness** -- If the process is alive but `output.log` mtime exceeds the staleness threshold, enter a grace period. If output remains stale, treat as hang and resume.
+
+### Configuration
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MONITOR_BASE_INTERVAL` | `30` (seconds) | Base polling interval; doubles on each failure |
+| `MONITOR_MAX_INTERVAL` | `300` (5 minutes) | Maximum polling interval cap |
+| `MONITOR_DEADLINE` | `18000` (5 hours) | Wall-clock deadline; monitor exits after this |
+| `MONITOR_GRACE_PERIOD` | `30` (seconds) | Grace period before acting on stale output |
 
 ## Quick Start
 
 ```bash
-# Start a long Codex task in tmux
-SESSION="codex-refactor"
+# 1. Create secure temp directory
 TMPDIR=$(mktemp -d) && chmod 700 "$TMPDIR"
 
-# Write prompt (in practice, use orchestrator's write tool)
-echo "Refactor auth module" > "$TMPDIR/prompt"
+# 2. Write prompt (in practice, use orchestrator's write tool)
+echo "Refactor the auth module" > "$TMPDIR/prompt"
 
-tmux new-session -d -s "$SESSION" -e "TASK_TMPDIR=$TMPDIR"
-tmux send-keys -t "$SESSION" 'cd ~/project && set -o pipefail && codex exec --full-auto --json "$(cat $TASK_TMPDIR/prompt)" | tee $TASK_TMPDIR/events.jsonl && openclaw system event --text "Codex done: auth refactor" --mode now; echo "__TASK_DONE__"' Enter
+# 3. Create initial manifest
+jq -n \
+  --arg task_name "refactor-auth" \
+  --arg model "claude-sonnet-4-6" \
+  --arg project_dir "$(pwd)" \
+  --arg session_name "claude-refactor-auth" \
+  --arg pid "0" \
+  --arg tmpdir "$TMPDIR" \
+  --arg started_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+  --arg status "running" \
+  '{task_name: $task_name, model: $model, project_dir: $project_dir, session_name: $session_name, pid: ($pid | tonumber), tmpdir: $tmpdir, started_at: $started_at, status: $status}' \
+  > "$TMPDIR/manifest.json.tmp" && mv "$TMPDIR/manifest.json.tmp" "$TMPDIR/manifest.json"
 
-# Save this task's Codex session ID (safer than resume --last when multiple tasks run)
-until [ -s "$TMPDIR/codex-session-id" ]; do
-  if command -v jq &>/dev/null; then
-    jq -r 'select(.thread_id) | .thread_id' "$TMPDIR/events.jsonl" 2>/dev/null | head -n 1 > "$TMPDIR/codex-session-id"
-  else
-    grep -oE '"thread_id":"[^"]+"' "$TMPDIR/events.jsonl" 2>/dev/null | head -n 1 | cut -d'"' -f4 > "$TMPDIR/codex-session-id"
-  fi
-  sleep 1
-done
+# 4. Create tmux session
+tmux new-session -d -s claude-refactor-auth -e "TASK_TMPDIR=$TMPDIR"
 
-# Check progress
-tmux capture-pane -t "$SESSION" -p -S -100
+# 5. Start output capture with ANSI stripping
+tmux pipe-pane -t claude-refactor-auth -O \
+  "perl -pe 's/\x1b\[[0-9;]*[mGKHfABCDJsu]//g; s/\x1b\][^\x07]*\x07//g; s/\x1b\(B//g; s/\r//g' >> $TMPDIR/output.log"
 
-# If Codex crashes, resume this exact session
-CODEX_SESSION_ID="$(cat "$TMPDIR/codex-session-id")"
-tmux send-keys -t "$SESSION" "codex exec resume $CODEX_SESSION_ID \"Continue the refactor\"" Enter
+# 6. Launch Claude Code (see SKILL.md for full wrapper with PID capture + manifest updates)
+tmux send-keys -t claude-refactor-auth \
+  'claude -p --model claude-sonnet-4-6 "$(cat $TASK_TMPDIR/prompt)"' Enter
 
-# Or run the monitor script for automated crash detection + resume
-./scripts/monitor.sh "$SESSION" codex
+# 7. Start the monitor
+./scripts/monitor.sh claude-refactor-auth "$TMPDIR"
+
+# 8. Check results
+jq . "$TMPDIR/manifest.json"
+tail -n 50 "$TMPDIR/output.log"
 ```
+
+See [SKILL.md](SKILL.md) for the complete 6-step launch sequence with PID capture, manifest updates, and done-file protocol.
 
 ## Requirements
 
-- `tmux` installed
-- At least one coding agent CLI (codex, claude, opencode, or pi)
-- `bash` for the health-monitor script (`scripts/monitor.sh`)
+- **tmux** -- Process isolation and session management
+- **Claude Code CLI** (`claude`) -- The coding agent
+- **jq** -- JSON manifest creation and updates
+- **bash** -- Shell for monitor script
 
 ## Compatibility
 
-- **macOS / Linux**: Fully supported. Install tmux via package manager.
-- **Windows**: Requires WSL. Native Windows is not supported (no tmux).
-- **Shell**: Health monitoring detects bash (`$ `), zsh (`% `), and fish (`> `) prompts.
+- **macOS / Linux**: Fully supported
+- **Windows**: Requires WSL (no native tmux)
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `SKILL.md` | Orchestrator interface -- the Brain reads this to delegate tasks |
+| `scripts/monitor.sh` | Three-layer health monitor with configurable intervals and EXIT trap |
 
 ## License
 
-MIT, Copyright cosformula
+MIT
