@@ -83,16 +83,21 @@ $TMPDIR/                         # mktemp -d, chmod 700
                                  #   Created: Phase 2
 
   exit_code                      # Process exit code (numeric string)
-                                 #   Written by: task wrapper (echo $?)
+                                 #   Written by: wrapper.sh (echo $?)
                                  #   Read by: monitor.sh, manifest updater
                                  #   Created: Phase 2
+
+  resume                         # Resume signal (written by monitor, consumed by wrapper)
+                                 #   Written by: monitor.sh (dispatch_resume)
+                                 #   Read by: wrapper.sh (mode detection)
+                                 #   Deleted by: wrapper.sh on resume
 ```
 
-**Status:** Phase 1 created `prompt`. Phase 2 implements `pid`, `output.log`, `done`, and `exit_code` via the shell wrapper and pipe-pane patterns. Phase 3 adds `manifest.json` -- created by the orchestrator in Step 3 (initial fields with pid=0), updated by the wrapper in Step 6 (real PID after `$!` capture, then completion fields before `touch done`). All task directory files are now active.
+**Status:** Phase 1 created `prompt`. Phase 2 implements `pid`, `output.log`, `done`, and `exit_code` via the shell wrapper and pipe-pane patterns. Phase 3 adds `manifest.json` -- created by the orchestrator in Step 3 (initial fields with pid=0), updated by `scripts/wrapper.sh` in Step 6 (real PID after `$!` capture, then completion fields before `touch done`). The `resume` file is a transient signal used by the monitor to tell the wrapper to resume rather than start fresh. All task directory files are now active.
 
 ## Start a Task
 
-Create a tmux session and launch Claude Code with the appropriate model. The launch sequence uses a shell wrapper that captures the Claude Code PID, waits for completion, and writes structured completion markers.
+Create a tmux session and launch Claude Code with the appropriate model. The launch sequence uses `scripts/wrapper.sh` which handles PID capture, manifest updates, completion notification, and the done-file protocol. The same wrapper handles both first-run and resume modes.
 
 ```bash
 # Step 1: Create secure temp directory
@@ -121,33 +126,24 @@ tmux new-session -d -s claude-<task-name> -e "TASK_TMPDIR=$TMPDIR"
 tmux pipe-pane -t claude-<task-name> -O \
   "perl -pe 's/\x1b\[[0-9;]*[mGKHfABCDJsu]//g; s/\x1b\][^\x07]*\x07//g; s/\x1b\(B//g; s/\r//g' >> $TMPDIR/output.log"
 
-# Step 6: Launch with wrapper (PID capture + manifest updates + done-file protocol)
+# Step 6: Launch via wrapper script
 tmux send-keys -t claude-<task-name> \
-  'cd <project-dir> && claude -p --model <model-name> "$(cat $TASK_TMPDIR/prompt)" & CLAUDE_PID=$!; echo "$CLAUDE_PID" > "$TASK_TMPDIR/pid"; jq --argjson pid "$CLAUDE_PID" ".pid = \$pid" "$TASK_TMPDIR/manifest.json" > "$TASK_TMPDIR/manifest.json.tmp" && mv "$TASK_TMPDIR/manifest.json.tmp" "$TASK_TMPDIR/manifest.json"; wait $CLAUDE_PID; ECODE=$?; echo "$ECODE" > "$TASK_TMPDIR/exit_code.tmp" && mv "$TASK_TMPDIR/exit_code.tmp" "$TASK_TMPDIR/exit_code"; if [ "$ECODE" -eq 0 ]; then STATUS=completed; else STATUS=failed; fi; jq --arg finished_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --argjson exit_code "$ECODE" --arg status "$STATUS" --arg output_tail "$(tail -n 100 "$TASK_TMPDIR/output.log" 2>/dev/null || echo "")" ". + {finished_at: \$finished_at, exit_code: \$exit_code, status: \$status, output_tail: \$output_tail}" "$TASK_TMPDIR/manifest.json" > "$TASK_TMPDIR/manifest.json.tmp" && mv "$TASK_TMPDIR/manifest.json.tmp" "$TASK_TMPDIR/manifest.json"; touch "$TASK_TMPDIR/done"' Enter
+  'bash <skill-dir>/scripts/wrapper.sh' Enter
 ```
 
 **Step 3 -- manifest** creates `manifest.json` with all eight fields before the tmux session exists. The `jq -n` flag generates JSON from scratch. PID is set to `0` (placeholder) because the real PID is not known until after background launch. The `--arg pid "0"` + `($pid | tonumber)` pattern produces a JSON number (not string). The atomic write-to-tmp + `mv` pattern ensures the Brain never reads a partial file.
 
 **Step 5 -- pipe-pane** is set BEFORE send-keys to guarantee no output is missed. The `-O` flag captures only pane output (not input). The perl chain strips four categories of ANSI escapes: CSI sequences (colors, cursor movement), OSC sequences (window titles), charset selection, and carriage returns (progress bar overwrites).
 
-**Step 6 -- wrapper** runs these steps in sequence: (1) launch Claude Code in background with `&`, (2) capture PID via `$!`, (3) write PID to file immediately, (4) update manifest with real PID via `jq --argjson`, (5) `wait` blocks until Claude exits and preserves exit code, (6) atomic exit_code write (write-to-tmp then `mv`), (7) determine status (completed/failed) from exit code, (8) update manifest with `finished_at`, `exit_code`, `status`, and `output_tail` via `jq` merge, (9) `touch done` as the completion signal. The exit_code and manifest completion update are both written BEFORE done to prevent a race condition where the monitor sees done but results do not yet exist. Inside the single-quoted send-keys string, jq variable references use `\$varname` so the pane shell passes literal `$` to jq.
+**Step 6 -- wrapper** invokes `scripts/wrapper.sh`, which reads `TASK_TMPDIR` from the tmux session environment (set in Step 4) and `model`/`project_dir` from `manifest.json` (created in Step 3). The wrapper detects its mode from the filesystem: if `done` exists, it exits early; if `resume` exists (written by the monitor), it runs `claude -c`; otherwise it runs `claude -p` with the prompt. In all active modes, the wrapper: (1) launches Claude Code in background, (2) writes the real PID to `$TASK_TMPDIR/pid`, (3) updates manifest with running status, (4) waits for completion, (5) writes exit_code and completion manifest atomically, (6) fires `openclaw system event` (fire-and-forget), and (7) `touch done` as the last operation. This ensures resume operations get the same full lifecycle management as first runs.
 
 Replace `<model-name>` with the full model name from the mapping table:
 - Brain sends `opus` --> use `claude-opus-4-6`
 - Brain sends `sonnet` --> use `claude-sonnet-4-6`
 
-Both `-p` and `--model` flags are required. `-p` enables non-interactive (print) mode for fire-and-forget execution. `--model` selects the model tier. Without `-p`, Claude Code enters interactive mode inside tmux, which defeats fire-and-forget execution.
+Replace `<skill-dir>` with the absolute path to this skill's directory. The Brain already resolves this path when launching `scripts/monitor.sh` in Step 9.
 
-### Completion Notification
-
-Chain an OpenClaw system event after the agent so the Brain is notified on completion. The notification is placed BEFORE `touch done` so the done-file remains the last thing written regardless of notification success:
-
-```bash
-tmux send-keys -t claude-<task-name> \
-  'cd <project-dir> && claude -p --model <model-name> "$(cat $TASK_TMPDIR/prompt)" & CLAUDE_PID=$!; echo "$CLAUDE_PID" > "$TASK_TMPDIR/pid"; jq --argjson pid "$CLAUDE_PID" ".pid = \$pid" "$TASK_TMPDIR/manifest.json" > "$TASK_TMPDIR/manifest.json.tmp" && mv "$TASK_TMPDIR/manifest.json.tmp" "$TASK_TMPDIR/manifest.json"; wait $CLAUDE_PID; ECODE=$?; echo "$ECODE" > "$TASK_TMPDIR/exit_code.tmp" && mv "$TASK_TMPDIR/exit_code.tmp" "$TASK_TMPDIR/exit_code"; if [ "$ECODE" -eq 0 ]; then STATUS=completed; else STATUS=failed; fi; jq --arg finished_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --argjson exit_code "$ECODE" --arg status "$STATUS" --arg output_tail "$(tail -n 100 "$TASK_TMPDIR/output.log" 2>/dev/null || echo "")" ". + {finished_at: \$finished_at, exit_code: \$exit_code, status: \$status, output_tail: \$output_tail}" "$TASK_TMPDIR/manifest.json" > "$TASK_TMPDIR/manifest.json.tmp" && mv "$TASK_TMPDIR/manifest.json.tmp" "$TASK_TMPDIR/manifest.json"; openclaw system event --text "Claude done: <task-name>" --mode now; touch "$TASK_TMPDIR/done"' Enter
-```
-
-The `openclaw system event` uses `;` (fire-and-forget) so notification failure does not block completion. The ordering is: exit_code write -> manifest completion update -> openclaw event -> touch done.
+Both `-p` and `--model` flags are required (used internally by wrapper.sh). `-p` enables non-interactive (print) mode for fire-and-forget execution. `--model` selects the model tier. Without `-p`, Claude Code enters interactive mode inside tmux, which defeats fire-and-forget execution.
 
 ## Monitor Progress
 
@@ -184,8 +180,8 @@ Use the active monitor script (`scripts/monitor.sh`) for every task. The monitor
 The monitor uses a three-layer detection flow, checked in this exact priority order every iteration:
 
 1. **Done-file check** -- If `$TASK_TMPDIR/done` exists, the task completed. Read `$TASK_TMPDIR/exit_code` for the result. Exit monitor.
-2. **PID liveness check** -- Read PID from `$TASK_TMPDIR/pid` and test with `kill -0 $PID`. If the process is dead and no done-file exists, the task crashed. The monitor updates `manifest.json` to `status: "crashed"` with `retry_count` and `last_checked_at`, then resumes via `claude -c` in the same tmux session.
-3. **Output staleness check** -- If the process is alive but `output.log` mtime exceeds the staleness threshold (3x base interval, default 90 seconds), the monitor enters a grace period. On the first stale detection, no action is taken -- only a timestamp is recorded. If output remains stale for the full grace period duration, the monitor treats it as a hang: updates the manifest to `status: "crashed"` and resumes via `claude -c`.
+2. **PID liveness check** -- Read PID from `$TASK_TMPDIR/pid` and test with `kill -0 $PID`. If the process is dead and no done-file exists, the task crashed. The monitor updates `manifest.json` to `status: "crashed"` with `retry_count` and `last_checked_at`, creates a `resume` marker file, removes the stale `pid` file, and dispatches `scripts/wrapper.sh` into the tmux session. The wrapper detects the `resume` marker and runs `claude -c` with full lifecycle management (new PID, manifest updates, done-file on completion).
+3. **Output staleness check** -- If the process is alive but `output.log` mtime exceeds the staleness threshold (3x base interval, default 90 seconds), the monitor enters a grace period. On the first stale detection, no action is taken -- only a timestamp is recorded. If output remains stale for the full grace period duration, the monitor treats it as a hang: updates the manifest to `status: "hung"` and dispatches `scripts/wrapper.sh` for resume (same flow as crash recovery).
 
 The done-file is checked FIRST because a completed task may have a dead PID (expected). Only if done-file is absent does a dead PID indicate a crash. The staleness check (Layer 3) is only reached when the done-file is absent AND the PID is alive.
 
@@ -201,18 +197,21 @@ Override monitor behavior by setting environment variables before launching the 
 | `MONITOR_MAX_INTERVAL` | `300` (5 minutes) | Maximum polling interval cap |
 | `MONITOR_DEADLINE` | `18000` (5 hours) | Wall-clock deadline; monitor exits after this |
 | `MONITOR_GRACE_PERIOD` | `30` (seconds) | Grace period before acting on stale output |
+| `MONITOR_MAX_RETRIES` | `10` | Maximum resume attempts before abandoning task |
 
 The staleness threshold is derived as 3x `MONITOR_BASE_INTERVAL` (default: 90 seconds). To adjust hang detection sensitivity, change `MONITOR_BASE_INTERVAL` -- the staleness threshold scales automatically.
 
 ### Cleanup and Abandonment
 
-When the deadline is reached or the monitor is terminated (signal, manual kill), an EXIT trap fires automatically:
+When the deadline is reached, max retries exceeded, or the monitor is terminated (signal, manual kill), an EXIT trap fires automatically:
 
-1. **Manifest update** -- Sets `manifest.json` status to `"abandoned"` with an `abandoned_at` timestamp, unless the task already completed (done-file exists). This guard prevents overwriting a completed task's manifest.
+1. **Manifest update** -- Sets `manifest.json` status to `"abandoned"` with an `abandoned_at` timestamp, unless the task already completed (done-file exists) or was already marked abandoned by the max-retry path. This guard prevents overwriting a completed task's manifest.
 2. **Notification** -- Fires `openclaw system event` to notify the Brain that the task was abandoned.
 3. **Session cleanup** -- Disables `pipe-pane` and kills the tmux session, preventing orphan processes.
 
-This replaces the need for manual cleanup after deadline exhaustion. All exit paths (deadline, signal, error) trigger the same cleanup sequence.
+When max retries are exceeded, the manifest is updated with `status: "abandoned"`, `abandon_reason: "max_retries_exceeded"`, and the final `retry_count` before the EXIT trap fires.
+
+All exit paths (deadline, max retries, signal, error) trigger the same cleanup sequence.
 
 ## Recovery After Interruption
 
