@@ -85,7 +85,7 @@ dispatch_resume() {
 
   # Dispatch wrapper (resolves mode from resume file)
   tmux send-keys -t "$SESSION" "bash $WRAPPER_PATH" Enter
-  sleep 10
+  sleep "${MONITOR_DISPATCH_WAIT:-10}"
 }
 
 # --- Cleanup (EXIT trap) ---
@@ -139,6 +139,7 @@ main() {
   MONITOR_DEADLINE="${MONITOR_DEADLINE:-18000}"             # seconds; default 5h
   MONITOR_GRACE_PERIOD="${MONITOR_GRACE_PERIOD:-30}"       # seconds; default 30s
   MONITOR_MAX_RETRIES="${MONITOR_MAX_RETRIES:-10}"         # max resume attempts
+  MONITOR_DISPATCH_WAIT="${MONITOR_DISPATCH_WAIT:-10}"     # seconds; post-resume wait
 
   # State variables
   RETRY_COUNT=0

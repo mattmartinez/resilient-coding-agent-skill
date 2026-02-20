@@ -39,7 +39,7 @@ cd "$PROJECT_DIR" || exit 1
 if [ -f "$TASK_TMPDIR/resume" ]; then
   # Resume mode: monitor signaled a resume
   rm -f "$TASK_TMPDIR/resume"
-  claude -c &
+  claude -c --model "$MODEL" &
 else
   # First run: launch with prompt
   claude -p --model "$MODEL" "$(cat "$TASK_TMPDIR/prompt")" &
@@ -48,7 +48,8 @@ fi
 # --- Lifecycle management (same for both modes) ---
 
 CLAUDE_PID=$!
-echo "$CLAUDE_PID" > "$TASK_TMPDIR/pid"
+echo "$CLAUDE_PID" > "$TASK_TMPDIR/pid.tmp" \
+  && mv "$TASK_TMPDIR/pid.tmp" "$TASK_TMPDIR/pid"
 
 # Update manifest with real PID + running status (atomic)
 jq \
