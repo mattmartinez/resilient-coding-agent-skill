@@ -73,6 +73,7 @@ $TMPDIR/
   manifest.json    # Structured task state (JSON, atomic updates)
   done             # Completion marker (presence = complete)
   exit_code        # Process exit code (numeric string)
+  resume           # Resume signal (written by monitor, consumed by wrapper)
 ```
 
 ### Monitor Detection Layers
@@ -91,6 +92,8 @@ The monitor (`scripts/monitor.sh`) checks in strict priority order every iterati
 | `MONITOR_MAX_INTERVAL` | `300` (5 minutes) | Maximum polling interval cap |
 | `MONITOR_DEADLINE` | `18000` (5 hours) | Wall-clock deadline; monitor exits after this |
 | `MONITOR_GRACE_PERIOD` | `30` (seconds) | Grace period before acting on stale output |
+| `MONITOR_MAX_RETRIES` | `10` | Maximum resume attempts before abandoning task |
+| `MONITOR_DISPATCH_WAIT` | `10` (seconds) | Post-resume wait before next monitor check |
 
 ## Quick Start
 
@@ -159,6 +162,7 @@ git clone https://github.com/mattmartinez/resilient-coding-agent-skill.git
 | File | Purpose |
 |------|---------|
 | `SKILL.md` | Orchestrator interface -- the Brain reads this to delegate tasks |
+| `scripts/wrapper.sh` | Session lifecycle manager -- PID capture, manifest updates, done-file protocol |
 | `scripts/monitor.sh` | Three-layer health monitor with configurable intervals and EXIT trap |
 
 ## License

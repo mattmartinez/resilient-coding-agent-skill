@@ -60,32 +60,26 @@ $TMPDIR/                         # mktemp -d, chmod 700
   prompt                         # Task instructions
                                  #   Written by: orchestrator write tool
                                  #   Read by: Claude Code via $(cat)
-                                 #   Created: Phase 1 (existing)
 
   pid                            # Claude Code child process PID
-                                 #   Written by: task wrapper (pgrep)
+                                 #   Written by: wrapper.sh ($!, atomic write)
                                  #   Read by: monitor.sh (kill -0)
-                                 #   Created: Phase 2
 
   output.log                     # Continuous output capture
                                  #   Written by: tmux pipe-pane
                                  #   Read by: Brain (tail -n 50), monitor (mtime)
-                                 #   Created: Phase 2
 
   manifest.json                  # Structured task state (JSON)
-                                 #   Written by: orchestrator (initial) + task wrapper (PID, completion)
+                                 #   Written by: orchestrator (initial) + wrapper.sh (PID, completion)
                                  #   Read by: Brain (jq -r '.status')
-                                 #   Created: Phase 3 (active)
 
   done                           # Completion marker (presence = complete)
-                                 #   Written by: task wrapper on exit
+                                 #   Written by: wrapper.sh on exit
                                  #   Read by: monitor.sh ([ -f done ])
-                                 #   Created: Phase 2
 
   exit_code                      # Process exit code (numeric string)
                                  #   Written by: wrapper.sh (echo $?)
-                                 #   Read by: monitor.sh, manifest updater
-                                 #   Created: Phase 2
+                                 #   Read by: monitor.sh, Brain
 
   resume                         # Resume signal (written by monitor, consumed by wrapper)
                                  #   Written by: monitor.sh (dispatch_resume)
@@ -93,7 +87,7 @@ $TMPDIR/                         # mktemp -d, chmod 700
                                  #   Deleted by: wrapper.sh on resume
 ```
 
-**Status:** Phase 1 created `prompt`. Phase 2 implements `pid`, `output.log`, `done`, and `exit_code` via the shell wrapper and pipe-pane patterns. Phase 3 adds `manifest.json` -- created by the orchestrator in Step 3 (initial fields with pid=0), updated by `scripts/wrapper.sh` in Step 6 (real PID after `$!` capture, then completion fields before `touch done`). The `resume` file is a transient signal used by the monitor to tell the wrapper to resume rather than start fresh. All task directory files are now active.
+The `resume` file is a transient signal used by the monitor to tell the wrapper to resume rather than start fresh. All other files persist after task completion for result retrieval.
 
 ## Start a Task
 
@@ -198,6 +192,7 @@ Override monitor behavior by setting environment variables before launching the 
 | `MONITOR_DEADLINE` | `18000` (5 hours) | Wall-clock deadline; monitor exits after this |
 | `MONITOR_GRACE_PERIOD` | `30` (seconds) | Grace period before acting on stale output |
 | `MONITOR_MAX_RETRIES` | `10` | Maximum resume attempts before abandoning task |
+| `MONITOR_DISPATCH_WAIT` | `10` (seconds) | Post-resume wait before next monitor check |
 
 The staleness threshold is derived as 3x `MONITOR_BASE_INTERVAL` (default: 90 seconds). To adjust hang detection sensitivity, change `MONITOR_BASE_INTERVAL` -- the staleness threshold scales automatically.
 
