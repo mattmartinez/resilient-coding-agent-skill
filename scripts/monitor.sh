@@ -27,11 +27,19 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # --- Cross-platform helpers ---
 
 # get_mtime: return epoch seconds of file mtime
-# macOS uses stat -f %m, Linux uses stat -c %Y
-# Returns 0 if file does not exist or stat fails (treated as infinitely old)
+# Tries GNU stat first (Linux), then BSD stat (macOS). Validates the
+# result is numeric because Linux `stat -f` is --file-system and outputs
+# non-numeric text instead of failing -- capturing that output would
+# break downstream arithmetic under set -u.
+# Returns 0 if file does not exist or output is non-numeric.
 get_mtime() {
   local file="$1"
-  stat -f %m "$file" 2>/dev/null || stat -c %Y "$file" 2>/dev/null || echo 0
+  local mtime
+  mtime=$(stat -c %Y "$file" 2>/dev/null) || mtime=$(stat -f %m "$file" 2>/dev/null)
+  case "$mtime" in
+    ''|*[!0-9]*) echo 0 ;;
+    *) echo "$mtime" ;;
+  esac
 }
 
 # compute_interval: exponential backoff capped at max and remaining time
