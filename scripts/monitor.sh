@@ -51,6 +51,53 @@ compute_interval() {
   echo "$interval"
 }
 
+# --- Pane state classification ---
+#
+# Inspects tmux pane contents for states that pipe-pane + file mtime
+# cannot detect reliably. The classifier is advisory -- the done-file
+# remains the source of truth for completion. Only waiting_for_input
+# is acted on immediately (abandon); other states are recorded in the
+# manifest for observability.
+#
+# States: waiting_for_input, crash_text, upgrade_nag, unknown
+
+# classify_pane_state SESSION — capture pane and classify
+# Never fails; returns "unknown" on any capture error.
+classify_pane_state() {
+  local session="$1"
+  local pane
+  pane=$(tmux capture-pane -t "$session" -p -S -30 2>/dev/null) || { echo unknown; return; }
+  _classify_pane_text "$pane"
+}
+
+# _classify_pane_text TEXT — pure classifier for testability
+_classify_pane_text() {
+  local pane="$1"
+
+  # Approval/trust prompts -- unexpected with --dangerously-skip-permissions
+  # but trust-on-first-use or edge-case dialogs can still appear.
+  if printf '%s' "$pane" | grep -qiE 'do you trust|\(y/n\)|continue\?|press .* to continue'; then
+    echo waiting_for_input
+    return
+  fi
+
+  # Crash text -- process may still be alive but in a broken state.
+  # Layer 2 will catch it if/when the PID dies; this is observability.
+  # Covers: Go ("panic:"), Rust ("panicked at"), segfault, core dump.
+  if printf '%s' "$pane" | grep -qE 'panic:|panicked at|Segmentation fault|core dumped'; then
+    echo crash_text
+    return
+  fi
+
+  # Upgrade nags -- harmless but noteworthy.
+  if printf '%s' "$pane" | grep -qiE 'new version available|update available'; then
+    echo upgrade_nag
+    return
+  fi
+
+  echo unknown
+}
+
 # --- Resume dispatch ---
 
 # dispatch_resume: shared handler for crash and hang recovery
@@ -199,6 +246,26 @@ main() {
       STALE_SINCE=""  # Clear stale state on crash
       dispatch_resume "Crash detected (PID $PID gone)." "crashed"
       continue
+    fi
+
+    # --- Layer 2.5: Pane state classification (advisory + abandon-on-wait) ---
+    PANE_STATE=$(classify_pane_state "$SESSION")
+    if [ "$PANE_STATE" != "unknown" ] && [ -f "$TASK_TMPDIR/manifest" ]; then
+      manifest_set "$TASK_TMPDIR/manifest" pane_state "$PANE_STATE"
+    fi
+    if [ "$PANE_STATE" = "waiting_for_input" ]; then
+      # With --dangerously-skip-permissions, interactive prompts should
+      # not appear. If one does, nothing is going to answer it -- the
+      # task is permanently stuck. Abandon immediately with a specific
+      # reason so the Brain can react.
+      echo "Task stuck waiting for user input -- abandoning"
+      if [ -f "$TASK_TMPDIR/manifest" ]; then
+        manifest_set "$TASK_TMPDIR/manifest" \
+          status abandoned \
+          abandon_reason waiting_for_input \
+          abandoned_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+      fi
+      exit 1  # EXIT trap fires for cleanup
     fi
 
     # --- Layer 3: Output staleness (process alive, no done-file) ---

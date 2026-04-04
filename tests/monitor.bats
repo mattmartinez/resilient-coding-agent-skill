@@ -54,6 +54,54 @@ teardown() {
   [ "$result" -eq 10 ]
 }
 
+# --- pane state classifier tests ---
+
+@test "_classify_pane_text detects trust prompt" {
+  result=$(_classify_pane_text "Do you trust the files in this workspace? (y/N)")
+  [ "$result" = "waiting_for_input" ]
+}
+
+@test "_classify_pane_text detects lowercase y/n confirmation" {
+  result=$(_classify_pane_text "Proceed with deletion? (y/n)")
+  [ "$result" = "waiting_for_input" ]
+}
+
+@test "_classify_pane_text detects Continue? prompt" {
+  result=$(_classify_pane_text "Continue? This will modify 42 files.")
+  [ "$result" = "waiting_for_input" ]
+}
+
+@test "_classify_pane_text detects panic crash text" {
+  result=$(_classify_pane_text "thread 'main' panicked at src/lib.rs:42")
+  [ "$result" = "crash_text" ]
+}
+
+@test "_classify_pane_text detects segfault crash text" {
+  result=$(_classify_pane_text "Segmentation fault (core dumped)")
+  [ "$result" = "crash_text" ]
+}
+
+@test "_classify_pane_text detects upgrade nag" {
+  result=$(_classify_pane_text "A new version available: 1.2.3")
+  [ "$result" = "upgrade_nag" ]
+}
+
+@test "_classify_pane_text returns unknown for normal output" {
+  result=$(_classify_pane_text "Reading file src/main.rs... done.")
+  [ "$result" = "unknown" ]
+}
+
+@test "_classify_pane_text returns unknown for empty input" {
+  result=$(_classify_pane_text "")
+  [ "$result" = "unknown" ]
+}
+
+@test "_classify_pane_text prioritizes waiting_for_input over crash_text" {
+  # If both are present, waiting_for_input is more actionable
+  result=$(_classify_pane_text "Previous run: panic: something bad. Continue? (y/N)")
+  [ "$result" = "waiting_for_input" ]
+}
+
 # --- dispatch_resume tests ---
 
 @test "dispatch_resume increments retry count" {
