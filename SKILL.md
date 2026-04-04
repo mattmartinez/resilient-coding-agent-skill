@@ -1,11 +1,11 @@
 ---
-name: resilient-coding-agent
+name: resilient-claude-agent
 description: "Run Claude Code sessions in tmux for fire-and-forget execution with crash recovery, model routing, and structured task state."
 metadata:
   openclaw:
     emoji: "🛡️"
     requires:
-      bins: [tmux, claude]
+      bins: [tmux, claude, jq, bash]
 ---
 
 # Resilient Coding Agent
@@ -40,16 +40,14 @@ chmod 700 "$TMPDIR"
 
 ## When to Use This
 
-Use this skill for ALL tasks that are not pure conversational chat. This includes:
+Use this skill when the orchestrator explicitly delegates a coding task. Typical use cases include:
 - Coding, debugging, refactoring, and architecture work
 - File exploration, search, and analysis
 - Test writing and test debugging
 - Documentation generation
 - Code review and security analysis
-- Any reasoning or investigation task
 
-You are NOT a coding agent. Do not attempt to do coding work directly.
-Delegate ALL substantive work through this skill, regardless of expected duration.
+The orchestrator decides when to delegate through this skill. Do not self-invoke.
 
 ## Task Directory Schema
 
