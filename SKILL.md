@@ -166,7 +166,11 @@ Check progress when:
 
 ## Health Monitoring
 
-Use the active monitor script (`scripts/monitor.sh`) for every task. The monitor runs continuously with configurable intervals and handles its own timing -- no cron or external scheduler needed.
+Use the active monitor script for every task. The monitor runs continuously with configurable intervals and handles its own timing -- no cron or external scheduler needed.
+
+```bash
+bash <skill-dir>/scripts/monitor.sh claude-<task-name> $TMPDIR
+```
 
 The monitor uses a three-layer detection flow, checked in this exact priority order every iteration:
 
@@ -253,7 +257,7 @@ Before starting a task:
 6. Launch Claude Code with wrapper (PID capture + manifest updates + done-file protocol)
 7. Verify pipe-pane is capturing output (`ls -la $TMPDIR/output.log`)
 8. Notify user: task content, session name (`claude-<task-name>`), model used
-9. Launch monitor: `bash scripts/monitor.sh` (handles done-file detection, PID liveness, and staleness -- mandatory for every task)
+9. Launch monitor: `bash <skill-dir>/scripts/monitor.sh claude-<task-name> $TMPDIR` (handles done-file detection, PID liveness, and staleness -- mandatory for every task)
 
 ## Limitations
 
