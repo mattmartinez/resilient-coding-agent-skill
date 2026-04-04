@@ -34,7 +34,7 @@ TMPDIR=$(mktemp -d)
 chmod 700 "$TMPDIR"
 ```
 
-**Prompt safety:** Task prompts are never interpolated into shell commands. Instead, write the prompt to a temp file using the orchestrator's `write` tool (no shell involved), then reference it with `"$(cat $TASK_TMPDIR/prompt)"` inside the tmux command. The shell treats command substitution output inside double quotes as a single literal argument, preventing injection. This depends on the orchestrator's `write` tool not invoking a shell; OpenClaw's built-in `write` tool meets this requirement.
+**Prompt safety:** Task prompts are never interpolated into shell commands. Instead, write the prompt to a temp file using the orchestrator's `write` tool (no shell involved). The wrapper reads the prompt via stdin redirection (`claude -p --model "$MODEL" - < "$TASK_TMPDIR/prompt"`), so the prompt content never appears in process arguments (invisible to `ps`/`top`) and is not subject to shell interpolation. This depends on the orchestrator's `write` tool not invoking a shell; OpenClaw's built-in `write` tool meets this requirement.
 
 **Sensitive output:** tmux scrollback and log files may contain secrets or API keys from agent output. On shared machines, restrict file permissions (`chmod 600`) and clean up temp directories after task completion.
 
