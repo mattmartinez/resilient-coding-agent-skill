@@ -12,6 +12,41 @@ metadata:
 
 Long-running coding tasks are vulnerable to interruption: orchestrator restarts, process crashes, network drops. This skill decouples Claude Code from the orchestrator using tmux, enabling fire-and-forget execution with automatic resume on interruption. The orchestrator specifies which model to use; the skill handles session lifecycle, crash recovery, and output capture.
 
+## Trust Model
+
+This skill runs Claude Code with `--dangerously-skip-permissions` and dispatches commands into tmux via `send-keys`. These are required capabilities, not bugs — the whole point is fire-and-forget execution with no human in the loop to approve prompts. Read this section before installing so you understand exactly what you are enabling.
+
+**What this skill can do at runtime:**
+
+- Execute Claude Code without any permission prompts. Claude will read, write, and run bash commands in the project directory without asking. If a coding agent with full filesystem and shell access inside your project is not acceptable, do not install this skill.
+- Create and kill tmux sessions whose names match `claude-<task-name>`. If you run other tmux sessions with that prefix, the monitor's cleanup path could terminate them.
+- Dispatch bash commands into tmux via `send-keys`. The orchestrator controls what gets dispatched, so a compromised or buggy orchestrator can use this skill to run arbitrary bash in the project directory.
+- Write files to a secure temp directory (`mktemp -d`, `chmod 700`) and to the project directory via Claude Code.
+- Fire `openclaw system event` notifications (fire-and-forget, failures swallowed).
+
+**What this skill does NOT do:**
+
+- No remote downloads, no archive extraction, no out-of-band installs.
+- No environment variables or credentials are required. `MONITOR_*` env vars only tune timing.
+- No modifications outside the task temp directory and the project directory Claude is working in.
+- No network access beyond what Claude Code itself initiates.
+
+**Guarantees the skill enforces:**
+
+- Session names are sanitized (`monitor.sh` rejects anything outside `[A-Za-z0-9._-]`) before being passed to tmux, preventing injection through the session-name argument.
+- Task prompts are delivered via stdin redirect (`claude -p - < "$TMPDIR/prompt"`), never interpolated into shell arguments. They are invisible to `ps`/`top` and not subject to shell expansion. This depends on the orchestrator's `write` tool not invoking a shell to create the prompt file — OpenClaw's built-in `write` tool meets this requirement.
+- All manifest updates use write-to-tmp + `mv` for atomicity; the Brain never reads a partially-written manifest.
+- The `done` file is written last, so a process that exits mid-update never appears complete.
+
+**Deployment expectations:**
+
+- Run under a trusted orchestrator. Only install this skill in workspaces where you already trust the orchestrator to execute code in your project.
+- Prefer a dedicated user, VM, or container for any coding agent with `--dangerously-skip-permissions` enabled, including this one.
+- Audit the `claude` and `openclaw` binaries on your PATH. This skill inherits whatever those binaries do.
+- Do not share tmux sessions across unrelated work if you use the `claude-` prefix for other purposes.
+
+If you need a version with an explicit, auditable consent mechanism instead of `--dangerously-skip-permissions`, this skill is not the right choice — the permission bypass is fundamental to fire-and-forget execution.
+
 ## Placeholders
 
 - **`<task-name>`** -- Sanitized task identifier. Must match `[a-z0-9-]` only.
