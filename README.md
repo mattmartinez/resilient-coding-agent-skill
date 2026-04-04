@@ -140,17 +140,79 @@ See [SKILL.md](SKILL.md) for the complete 6-step launch sequence with PID captur
 
 ## Install
 
+### From ClawHub (recommended)
+
+The fastest way to install is via the ClawHub CLI:
+
 ```bash
-git clone https://github.com/mattmartinez/resilient-coding-agent-skill.git
+clawhub install bluehelixlab/resilient-coding-agent
+```
+
+Or using the native OpenClaw command:
+
+```bash
+openclaw skills install clawhub:bluehelixlab/resilient-coding-agent
+```
+
+The skill installs into your active workspace's `skills/` directory and is available on the next session start.
+
+### Pinning a version
+
+```bash
+# Install a specific version
+clawhub install bluehelixlab/resilient-coding-agent@1.0.0
+
+# Check for updates later
+clawhub outdated
+clawhub update bluehelixlab/resilient-coding-agent
+```
+
+### Manual install
+
+If you prefer to install from source:
+
+```bash
+# Clone into your OpenClaw skills directory
+cd ~/.openclaw/skills   # or your workspace skills/ directory
+git clone https://github.com/bluehelixlab/resilient-coding-agent-skill.git resilient-coding-agent
+```
+
+### Verify installation
+
+After installing, confirm the skill is loaded:
+
+```bash
+# List installed skills -- look for resilient-coding-agent
+clawhub list
+
+# Inspect the skill metadata
+clawhub info bluehelixlab/resilient-coding-agent
+```
+
+Start a new OpenClaw session so the Brain picks up the skill. The Brain will automatically delegate coding tasks through `SKILL.md` once the skill is active.
+
+### Uninstall
+
+```bash
+clawhub uninstall bluehelixlab/resilient-coding-agent
 ```
 
 ## Requirements
 
+The skill declares its binary requirements in SKILL.md frontmatter and ClawHub will warn you if they're missing:
+
 - **tmux** -- Process isolation and session management
 - **Claude Code CLI** (`claude`) -- The coding agent
 - **jq** -- JSON manifest creation and updates
-- **bash** -- Shell for monitor script
+- **bash** -- Shell for wrapper and monitor scripts
 - **OpenClaw** -- The orchestrator Brain that reads SKILL.md and delegates tasks
+
+Check prerequisites before first use:
+
+```bash
+# Verify required binaries are available
+command -v tmux && command -v claude && command -v jq && echo "All prerequisites met"
+```
 
 ## Compatibility
 
