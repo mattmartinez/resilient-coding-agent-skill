@@ -1,0 +1,31 @@
+.git/
+.github/
+.claude/
+.planning/
+.bg-shell/
+
+# Runtime / deps
+node_modules/
+.venv/
+__pycache__/
+
+# Build artifacts
+build/
+dist/
+
+# Data / temp
+data/
+tmp/
+.cache/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+*.log
+
+# Tests
+tests/
+
+# GitHub-only docs
+README.md
+LICENSE
