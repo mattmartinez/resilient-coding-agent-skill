@@ -5,7 +5,7 @@ metadata:
   openclaw:
     emoji: "🛡️"
     requires:
-      bins: [tmux, claude, jq, bash]
+      bins: [tmux, claude, jq, bash, perl, openclaw]
 ---
 
 # Resilient Coding Agent
