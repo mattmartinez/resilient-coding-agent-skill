@@ -25,7 +25,7 @@ Decouple Claude Code from the orchestrator by running it in a tmux session with 
 - **Three-layer monitoring** -- Done-file check, PID liveness, output staleness (in strict priority order)
 - **Automatic crash recovery** -- Dead process detected via `kill -0`, resumed via `claude -c`
 - **Hang detection** -- Alive-but-stuck processes detected via `output.log` mtime with grace period
-- **Structured task state** -- `manifest.json` with task metadata, status, timestamps, and output tail
+- **Structured task state** -- `manifest` (key=value) with task metadata, status, and timestamps
 - **Atomic writes** -- All manifest updates use write-to-tmp + `mv` to prevent partial reads
 - **Continuous output capture** -- `tmux pipe-pane` streams all output with ANSI stripping
 - **Configurable intervals** -- Base interval, max interval, deadline, and grace period via env vars
@@ -42,7 +42,7 @@ Brain (orchestrator)
 tmux session (claude-<task-name>)
   |-- Claude Code (opus or sonnet)
   |-- pipe-pane -> output.log (ANSI-stripped)
-  |-- wrapper -> pid, exit_code, manifest.json, done
+  |-- wrapper -> pid, exit_code, manifest, done
   |
   v
 monitor.sh (watchdog)
@@ -70,7 +70,7 @@ $TMPDIR/
   prompt           # Task instructions (written by orchestrator)
   pid              # Claude Code child PID (written by wrapper)
   output.log       # Continuous output via pipe-pane (ANSI-stripped)
-  manifest.json    # Structured task state (JSON, atomic updates)
+  manifest          # Structured task state (key=value, atomic updates)
   done             # Completion marker (presence = complete)
   exit_code        # Process exit code (numeric string)
   resume           # Resume signal (written by monitor, consumed by wrapper)
@@ -105,17 +105,16 @@ TMPDIR=$(mktemp -d) && chmod 700 "$TMPDIR"
 echo "Refactor the auth module" > "$TMPDIR/prompt"
 
 # 3. Create initial manifest
-jq -n \
-  --arg task_name "refactor-auth" \
-  --arg model "claude-sonnet-4-6" \
-  --arg project_dir "$(pwd)" \
-  --arg session_name "claude-refactor-auth" \
-  --arg pid "0" \
-  --arg tmpdir "$TMPDIR" \
-  --arg started_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-  --arg status "running" \
-  '{task_name: $task_name, model: $model, project_dir: $project_dir, session_name: $session_name, pid: ($pid | tonumber), tmpdir: $tmpdir, started_at: $started_at, status: $status}' \
-  > "$TMPDIR/manifest.json.tmp" && mv "$TMPDIR/manifest.json.tmp" "$TMPDIR/manifest.json"
+cat > "$TMPDIR/manifest" << EOF
+task_name=refactor-auth
+model=claude-sonnet-4-6
+project_dir=$(pwd)
+session_name=claude-refactor-auth
+pid=0
+tmpdir=$TMPDIR
+started_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+status=running
+EOF
 
 # 4. Create tmux session
 tmux new-session -d -s claude-refactor-auth -e "TASK_TMPDIR=$TMPDIR"
@@ -129,10 +128,10 @@ tmux send-keys -t claude-refactor-auth \
   'claude -p --model claude-sonnet-4-6 "$(cat $TASK_TMPDIR/prompt)"' Enter
 
 # 7. Start the monitor
-./scripts/monitor.sh claude-refactor-auth "$TMPDIR"
+bash scripts/monitor.sh claude-refactor-auth "$TMPDIR"
 
 # 8. Check results
-jq . "$TMPDIR/manifest.json"
+cat "$TMPDIR/manifest"
 tail -n 50 "$TMPDIR/output.log"
 ```
 
@@ -203,15 +202,13 @@ The skill declares its binary requirements in SKILL.md frontmatter and ClawHub w
 
 - **tmux** -- Process isolation and session management
 - **Claude Code CLI** (`claude`) -- The coding agent
-- **jq** -- JSON manifest creation and updates
-- **bash** -- Shell for wrapper and monitor scripts
 - **OpenClaw** -- The orchestrator Brain that reads SKILL.md and delegates tasks
 
 Check prerequisites before first use:
 
 ```bash
 # Verify required binaries are available
-command -v tmux && command -v claude && command -v jq && echo "All prerequisites met"
+command -v tmux && command -v claude && echo "All prerequisites met"
 ```
 
 ## Compatibility
@@ -226,6 +223,7 @@ command -v tmux && command -v claude && command -v jq && echo "All prerequisites
 | `SKILL.md` | Orchestrator interface -- the Brain reads this to delegate tasks |
 | `scripts/wrapper.sh` | Session lifecycle manager -- PID capture, manifest updates, done-file protocol |
 | `scripts/monitor.sh` | Three-layer health monitor with configurable intervals and EXIT trap |
+| `scripts/lib.sh` | Shared manifest helpers (sourced by wrapper and monitor) |
 
 ## License
 

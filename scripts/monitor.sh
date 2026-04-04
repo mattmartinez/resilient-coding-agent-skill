@@ -20,6 +20,10 @@
 
 set -uo pipefail
 
+# Source shared manifest helpers
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$_SCRIPT_DIR/lib.sh"
+
 # --- Cross-platform helpers ---
 
 # get_mtime: return epoch seconds of file mtime
@@ -51,16 +55,12 @@ dispatch_resume() {
   if [ "$RETRY_COUNT" -gt "$MONITOR_MAX_RETRIES" ]; then
     echo "Max retries ($MONITOR_MAX_RETRIES) exceeded. Abandoning task."
     # Update manifest with abandon reason before EXIT trap fires
-    if [ -f "$TASK_TMPDIR/manifest.json" ]; then
-      jq \
-        --arg status "abandoned" \
-        --arg abandon_reason "max_retries_exceeded" \
-        --argjson retry_count "$RETRY_COUNT" \
-        --arg abandoned_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-        '. + {status: $status, abandon_reason: $abandon_reason, retry_count: $retry_count, abandoned_at: $abandoned_at}' \
-        "$TASK_TMPDIR/manifest.json" \
-        > "$TASK_TMPDIR/manifest.json.tmp" \
-        && mv "$TASK_TMPDIR/manifest.json.tmp" "$TASK_TMPDIR/manifest.json"
+    if [ -f "$TASK_TMPDIR/manifest" ]; then
+      manifest_set "$TASK_TMPDIR/manifest" \
+        status abandoned \
+        abandon_reason max_retries_exceeded \
+        retry_count "$RETRY_COUNT" \
+        abandoned_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
     fi
     exit 1  # EXIT trap fires for cleanup
   fi
@@ -68,15 +68,11 @@ dispatch_resume() {
   echo "$reason Resuming (retry #$RETRY_COUNT)"
 
   # Update manifest with status (crashed or hung)
-  if [ -f "$TASK_TMPDIR/manifest.json" ]; then
-    jq \
-      --arg status "$status" \
-      --argjson retry_count "$RETRY_COUNT" \
-      --arg last_checked_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-      '. + {status: $status, retry_count: $retry_count, last_checked_at: $last_checked_at}' \
-      "$TASK_TMPDIR/manifest.json" \
-      > "$TASK_TMPDIR/manifest.json.tmp" \
-      && mv "$TASK_TMPDIR/manifest.json.tmp" "$TASK_TMPDIR/manifest.json"
+  if [ -f "$TASK_TMPDIR/manifest" ]; then
+    manifest_set "$TASK_TMPDIR/manifest" \
+      status "$status" \
+      retry_count "$RETRY_COUNT" \
+      last_checked_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   fi
 
   # Signal wrapper to use resume mode + clear stale PID
@@ -92,18 +88,14 @@ dispatch_resume() {
 
 cleanup() {
   # Guard: only update manifest if task not already completed
-  if [ -f "$TASK_TMPDIR/manifest.json" ] && [ ! -f "$TASK_TMPDIR/done" ]; then
+  if [ -f "$TASK_TMPDIR/manifest" ] && [ ! -f "$TASK_TMPDIR/done" ]; then
     # Only set abandoned if not already set by dispatch_resume max-retry path
     local current_status
-    current_status="$(jq -r '.status' "$TASK_TMPDIR/manifest.json" 2>/dev/null || echo "")"
+    current_status="$(manifest_read status "$TASK_TMPDIR/manifest")"
     if [ "$current_status" != "abandoned" ]; then
-      jq \
-        --arg status "abandoned" \
-        --arg abandoned_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-        '. + {status: $status, abandoned_at: $abandoned_at}' \
-        "$TASK_TMPDIR/manifest.json" \
-        > "$TASK_TMPDIR/manifest.json.tmp" \
-        && mv "$TASK_TMPDIR/manifest.json.tmp" "$TASK_TMPDIR/manifest.json"
+      manifest_set "$TASK_TMPDIR/manifest" \
+        status abandoned \
+        abandoned_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
     fi
     openclaw system event --text "Task abandoned: $SESSION" --mode now 2>/dev/null || true
   fi
@@ -130,8 +122,7 @@ main() {
   fi
 
   # Resolve wrapper path
-  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-  WRAPPER_PATH="$SCRIPT_DIR/wrapper.sh"
+  WRAPPER_PATH="$_SCRIPT_DIR/wrapper.sh"
 
   # Configurable intervals (override via environment)
   MONITOR_BASE_INTERVAL="${MONITOR_BASE_INTERVAL:-30}"     # seconds; default 30s

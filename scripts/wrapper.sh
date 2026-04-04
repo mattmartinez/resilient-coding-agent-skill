@@ -8,11 +8,15 @@
 #   - Completed:  done-file exists, exit early
 #
 # Reads TASK_TMPDIR from environment (set by tmux new-session -e).
-# Reads model and project_dir from manifest.json.
+# Reads model and project_dir from manifest.
 #
 # Usage: called via tmux send-keys from the orchestrator or monitor.
 
 set -uo pipefail
+
+# Source shared manifest helpers
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$_SCRIPT_DIR/lib.sh"
 
 TASK_TMPDIR="${TASK_TMPDIR:?TASK_TMPDIR not set}"
 
@@ -31,8 +35,8 @@ if [ -f "$TASK_TMPDIR/done" ]; then
 fi
 
 # Read model and project_dir from manifest
-MODEL="$(jq -r '.model' "$TASK_TMPDIR/manifest.json")"
-PROJECT_DIR="$(jq -r '.project_dir' "$TASK_TMPDIR/manifest.json")"
+MODEL="$(manifest_read model "$TASK_TMPDIR/manifest")"
+PROJECT_DIR="$(manifest_read project_dir "$TASK_TMPDIR/manifest")"
 
 cd "$PROJECT_DIR" || exit 1
 
@@ -52,13 +56,9 @@ echo "$CLAUDE_PID" > "$TASK_TMPDIR/pid.tmp" \
   && mv "$TASK_TMPDIR/pid.tmp" "$TASK_TMPDIR/pid"
 
 # Update manifest with real PID + running status (atomic)
-jq \
-  --argjson pid "$CLAUDE_PID" \
-  --arg status "running" \
-  '. + {pid: $pid, status: $status}' \
-  "$TASK_TMPDIR/manifest.json" \
-  > "$TASK_TMPDIR/manifest.json.tmp" \
-  && mv "$TASK_TMPDIR/manifest.json.tmp" "$TASK_TMPDIR/manifest.json"
+manifest_set "$TASK_TMPDIR/manifest" \
+  pid "$CLAUDE_PID" \
+  status running
 
 # Wait for Claude to finish
 wait $CLAUDE_PID
@@ -76,18 +76,13 @@ else
 fi
 
 # Update manifest with completion data (atomic)
-jq \
-  --arg finished_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-  --argjson exit_code "$ECODE" \
-  --arg status "$STATUS" \
-  --arg output_tail "$(tail -n 100 "$TASK_TMPDIR/output.log" 2>/dev/null || echo "")" \
-  '. + {finished_at: $finished_at, exit_code: $exit_code, status: $status, output_tail: $output_tail}' \
-  "$TASK_TMPDIR/manifest.json" \
-  > "$TASK_TMPDIR/manifest.json.tmp" \
-  && mv "$TASK_TMPDIR/manifest.json.tmp" "$TASK_TMPDIR/manifest.json"
+manifest_set "$TASK_TMPDIR/manifest" \
+  finished_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+  exit_code "$ECODE" \
+  status "$STATUS"
 
 # Fire-and-forget notification
-openclaw system event --text "Claude done: $(jq -r '.task_name' "$TASK_TMPDIR/manifest.json")" --mode now || true
+openclaw system event --text "Claude done: $(manifest_read task_name "$TASK_TMPDIR/manifest")" --mode now || true
 
 # Done-file is the last thing written
 touch "$TASK_TMPDIR/done"

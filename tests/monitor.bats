@@ -86,9 +86,9 @@ teardown() {
   tmux() { true; }
   export -f tmux
 
-  echo '{"status":"running","task_name":"test"}' > "$TASK_TMPDIR/manifest.json"
+  printf 'status=running\ntask_name=test\n' > "$TASK_TMPDIR/manifest"
   dispatch_resume "Test crash." "crashed"
-  status=$(jq -r '.status' "$TASK_TMPDIR/manifest.json")
+  status=$(manifest_read status "$TASK_TMPDIR/manifest")
   [ "$status" = "crashed" ]
 }
 
@@ -96,9 +96,9 @@ teardown() {
   tmux() { true; }
   export -f tmux
 
-  echo '{"status":"running","task_name":"test"}' > "$TASK_TMPDIR/manifest.json"
+  printf 'status=running\ntask_name=test\n' > "$TASK_TMPDIR/manifest"
   dispatch_resume "Test hang." "hung"
-  status=$(jq -r '.status' "$TASK_TMPDIR/manifest.json")
+  status=$(manifest_read status "$TASK_TMPDIR/manifest")
   [ "$status" = "hung" ]
 }
 
@@ -106,7 +106,7 @@ teardown() {
   tmux() { true; }
   export -f tmux
 
-  echo '{"status":"running","task_name":"test"}' > "$TASK_TMPDIR/manifest.json"
+  printf 'status=running\ntask_name=test\n' > "$TASK_TMPDIR/manifest"
   RETRY_COUNT=3  # Already at max
 
   run dispatch_resume "Test crash." "crashed"
@@ -117,11 +117,11 @@ teardown() {
   tmux() { true; }
   export -f tmux
 
-  echo '{"status":"running","task_name":"test"}' > "$TASK_TMPDIR/manifest.json"
+  printf 'status=running\ntask_name=test\n' > "$TASK_TMPDIR/manifest"
   RETRY_COUNT=3
 
   run dispatch_resume "Test crash." "crashed"
-  manifest_status=$(jq -r '.status' "$TASK_TMPDIR/manifest.json")
+  manifest_status=$(manifest_read status "$TASK_TMPDIR/manifest")
   [ "$manifest_status" = "abandoned" ]
 }
 
@@ -129,11 +129,11 @@ teardown() {
   tmux() { true; }
   export -f tmux
 
-  echo '{"status":"running","task_name":"test"}' > "$TASK_TMPDIR/manifest.json"
+  printf 'status=running\ntask_name=test\n' > "$TASK_TMPDIR/manifest"
   RETRY_COUNT=3
 
   run dispatch_resume "Test crash." "crashed"
-  reason=$(jq -r '.abandon_reason' "$TASK_TMPDIR/manifest.json")
+  reason=$(manifest_read abandon_reason "$TASK_TMPDIR/manifest")
   [ "$reason" = "max_retries_exceeded" ]
 }
 
@@ -141,15 +141,15 @@ teardown() {
   tmux() { true; }
   export -f tmux
 
-  echo '{"status":"running","task_name":"test"}' > "$TASK_TMPDIR/manifest.json"
+  printf 'status=running\ntask_name=test\n' > "$TASK_TMPDIR/manifest"
   dispatch_resume "Test crash." "crashed"
-  [ ! -f "$TASK_TMPDIR/manifest.json.tmp" ]
+  [ ! -f "$TASK_TMPDIR/manifest.tmp" ]
 }
 
 # --- cleanup tests ---
 
 @test "cleanup does not overwrite manifest when done-file exists" {
-  echo '{"status":"completed","task_name":"test"}' > "$TASK_TMPDIR/manifest.json"
+  printf 'status=completed\ntask_name=test\n' > "$TASK_TMPDIR/manifest"
   touch "$TASK_TMPDIR/done"
 
   # Mock tmux and openclaw as no-ops
@@ -159,6 +159,6 @@ teardown() {
   export -f openclaw
 
   cleanup
-  status=$(jq -r '.status' "$TASK_TMPDIR/manifest.json")
+  status=$(manifest_read status "$TASK_TMPDIR/manifest")
   [ "$status" = "completed" ]
 }
