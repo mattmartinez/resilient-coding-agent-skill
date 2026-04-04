@@ -128,7 +128,7 @@ tmux send-keys -t claude-refactor-auth \
   'claude -p --model claude-sonnet-4-6 "$(cat $TASK_TMPDIR/prompt)"' Enter
 
 # 7. Start the monitor
-bash scripts/monitor.sh claude-refactor-auth "$TMPDIR"
+nohup bash scripts/monitor.sh claude-refactor-auth "$TMPDIR" >"$TMPDIR/monitor.log" 2>&1 &
 
 # 8. Check results
 cat "$TMPDIR/manifest"

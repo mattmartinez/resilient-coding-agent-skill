@@ -205,8 +205,11 @@ Check progress when:
 Use the active monitor script for every task. The monitor runs continuously with configurable intervals and handles its own timing -- no cron or external scheduler needed.
 
 ```bash
-bash <skill-dir>/scripts/monitor.sh claude-<task-name> $TMPDIR
+nohup bash <skill-dir>/scripts/monitor.sh claude-<task-name> "$TMPDIR" \
+  >"$TMPDIR/monitor.log" 2>&1 &
 ```
+
+`nohup` is critical: it makes the monitor ignore SIGHUP so it survives the orchestrator's shell context ending. Without it, the monitor can be killed when its launching shell exits, leaving tasks without a watchdog. Output goes to `$TMPDIR/monitor.log` for post-hoc inspection.
 
 The monitor uses a layered detection flow, checked in this exact priority order every iteration:
 
@@ -294,7 +297,7 @@ Before starting a task:
 6. Launch Claude Code with wrapper (PID capture + manifest updates + done-file protocol)
 7. Verify pipe-pane is capturing output (`ls -la $TMPDIR/output.log`)
 8. Notify user: task content, session name (`claude-<task-name>`), model used
-9. Launch monitor: `bash <skill-dir>/scripts/monitor.sh claude-<task-name> $TMPDIR` (handles done-file detection, PID liveness, and staleness -- mandatory for every task)
+9. Launch monitor: `nohup bash <skill-dir>/scripts/monitor.sh claude-<task-name> "$TMPDIR" >"$TMPDIR/monitor.log" 2>&1 &` (mandatory for every task; `nohup` ensures the monitor survives parent shell exit)
 
 ## Limitations
 

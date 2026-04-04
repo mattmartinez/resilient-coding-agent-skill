@@ -193,6 +193,13 @@ main() {
   START_TS="$(date +%s)"
   DEADLINE_TS=$(( START_TS + MONITOR_DEADLINE ))
 
+  # Signal handling: gracefully handle softer signals before SIGKILL.
+  # SIGKILL cannot be trapped -- if the launching shell's process group
+  # gets torn down with SIGKILL, the monitor dies abruptly. Launch with
+  # `nohup ... &` (see SKILL.md) to survive parent shell exit.
+  trap 'echo "Received SIGTERM -- shutting down"; exit 143' TERM
+  trap 'echo "Received SIGHUP -- shutting down"; exit 129' HUP
+  trap 'echo "Received SIGINT -- shutting down"; exit 130' INT
   trap cleanup EXIT
 
   # --- Main loop ---
