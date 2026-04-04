@@ -99,9 +99,10 @@ TMPDIR=$(mktemp -d) && chmod 700 "$TMPDIR"
 # File: $TMPDIR/prompt
 
 # Step 3: Create initial manifest
+# model accepts short aliases (opus, sonnet) or full names (claude-opus-4-6, claude-sonnet-4-6)
 cat > "$TMPDIR/manifest" << EOF
 task_name=<task-name>
-model=<model-name>
+model=<model>
 project_dir=<project-dir>
 session_name=claude-<task-name>
 pid=0

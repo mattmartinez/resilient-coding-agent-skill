@@ -38,6 +38,12 @@ fi
 MODEL="$(manifest_read model "$TASK_TMPDIR/manifest")"
 PROJECT_DIR="$(manifest_read project_dir "$TASK_TMPDIR/manifest")"
 
+# Map short aliases to full model names
+case "$MODEL" in
+  opus)   MODEL="claude-opus-4-6" ;;
+  sonnet) MODEL="claude-sonnet-4-6" ;;
+esac
+
 cd "$PROJECT_DIR" || exit 1
 
 if [ -f "$TASK_TMPDIR/resume" ]; then
