@@ -87,8 +87,11 @@ manifest_set "$TASK_TMPDIR/manifest" \
   exit_code "$ECODE" \
   status "$STATUS"
 
-# Fire-and-forget notification
-openclaw system event --text "Claude done: $(manifest_read task_name "$TASK_TMPDIR/manifest")" --mode now || true
-
-# Done-file is the last thing written
+# Done-file written immediately after manifest so the monitor sees
+# completion before any slow notification step. Any delay between PID
+# exit and done creates a race where the monitor may classify success
+# as a crash.
 touch "$TASK_TMPDIR/done"
+
+# Fire-and-forget notification (after done, so monitor race is closed)
+openclaw system event --text "Claude done: $(manifest_read task_name "$TASK_TMPDIR/manifest")" --mode now || true

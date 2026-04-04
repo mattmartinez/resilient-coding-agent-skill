@@ -177,6 +177,17 @@ main() {
 
     # --- Layer 2: PID liveness (process crashed) ---
     if ! kill -0 "$PID" 2>/dev/null; then
+      # Grace window: wrapper may still be writing completion markers
+      # (exit_code, manifest, done) after Claude exits. A poll that
+      # catches the dead PID before the wrapper touches done would
+      # misclassify a successful exit as a crash. Re-check done after
+      # a brief pause to close this race.
+      sleep 2
+      if [ -f "$TASK_TMPDIR/done" ]; then
+        EXIT_CODE="$(cat "$TASK_TMPDIR/exit_code" 2>/dev/null || echo "unknown")"
+        echo "Task completed with exit code: $EXIT_CODE"
+        exit 0
+      fi
       STALE_SINCE=""  # Clear stale state on crash
       dispatch_resume "Crash detected (PID $PID gone)." "crashed"
       continue
