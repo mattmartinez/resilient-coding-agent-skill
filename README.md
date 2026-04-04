@@ -145,13 +145,13 @@ See [SKILL.md](SKILL.md) for the complete 6-step launch sequence with PID captur
 The fastest way to install is via the ClawHub CLI:
 
 ```bash
-clawhub install bluehelixlab/resilient-coding-agent
+clawhub install bluehelixlab/resilient-claude-agent
 ```
 
 Or using the native OpenClaw command:
 
 ```bash
-openclaw skills install clawhub:bluehelixlab/resilient-coding-agent
+openclaw skills install clawhub:bluehelixlab/resilient-claude-agent
 ```
 
 The skill installs into your active workspace's `skills/` directory and is available on the next session start.
@@ -160,11 +160,11 @@ The skill installs into your active workspace's `skills/` directory and is avail
 
 ```bash
 # Install a specific version
-clawhub install bluehelixlab/resilient-coding-agent@1.0.0
+clawhub install bluehelixlab/resilient-claude-agent@1.0.0
 
 # Check for updates later
 clawhub outdated
-clawhub update bluehelixlab/resilient-coding-agent
+clawhub update bluehelixlab/resilient-claude-agent
 ```
 
 ### Manual install
@@ -174,7 +174,7 @@ If you prefer to install from source:
 ```bash
 # Clone into your OpenClaw skills directory
 cd ~/.openclaw/skills   # or your workspace skills/ directory
-git clone https://github.com/bluehelixlab/resilient-coding-agent-skill.git resilient-coding-agent
+git clone https://github.com/bluehelixlab/resilient-claude-agent-skill.git resilient-claude-agent
 ```
 
 ### Verify installation
@@ -182,11 +182,11 @@ git clone https://github.com/bluehelixlab/resilient-coding-agent-skill.git resil
 After installing, confirm the skill is loaded:
 
 ```bash
-# List installed skills -- look for resilient-coding-agent
+# List installed skills -- look for resilient-claude-agent
 clawhub list
 
 # Inspect the skill metadata
-clawhub info bluehelixlab/resilient-coding-agent
+clawhub info bluehelixlab/resilient-claude-agent
 ```
 
 Start a new OpenClaw session so the Brain picks up the skill. The Brain will automatically delegate coding tasks through `SKILL.md` once the skill is active.
@@ -194,7 +194,7 @@ Start a new OpenClaw session so the Brain picks up the skill. The Brain will aut
 ### Uninstall
 
 ```bash
-clawhub uninstall bluehelixlab/resilient-coding-agent
+clawhub uninstall bluehelixlab/resilient-claude-agent
 ```
 
 ## Requirements
