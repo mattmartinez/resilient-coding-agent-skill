@@ -49,10 +49,10 @@ cd "$PROJECT_DIR" || exit 1
 if [ -f "$TASK_TMPDIR/resume" ]; then
   # Resume mode: monitor signaled a resume
   rm -f "$TASK_TMPDIR/resume"
-  claude -c --model "$MODEL" &
+  claude --dangerously-skip-permissions -c --model "$MODEL" &
 else
   # First run: launch with prompt via stdin (avoids exposing prompt in process args)
-  claude -p --model "$MODEL" - < "$TASK_TMPDIR/prompt" &
+  claude --dangerously-skip-permissions -p --model "$MODEL" - < "$TASK_TMPDIR/prompt" &
 fi
 
 # --- Lifecycle management (same for both modes) ---

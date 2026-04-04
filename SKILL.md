@@ -135,7 +135,7 @@ Replace `<model-name>` with the full model name from the mapping table:
 
 Replace `<skill-dir>` with the absolute path to this skill's directory. The Brain already resolves this path when launching `scripts/monitor.sh` in Step 9.
 
-Both `-p` and `--model` flags are required (used internally by wrapper.sh). `-p` enables non-interactive (print) mode for fire-and-forget execution. `--model` selects the model tier. Without `-p`, Claude Code enters interactive mode inside tmux, which defeats fire-and-forget execution.
+The wrapper invokes Claude Code with `--dangerously-skip-permissions -p --model <model>`. `-p` enables non-interactive (print) mode for fire-and-forget execution. `--model` selects the model tier. `--dangerously-skip-permissions` is required because fire-and-forget execution inside tmux cannot handle interactive permission prompts -- without it, the agent stalls on the first file write. This skill is designed for trusted, orchestrator-delegated coding tasks where permission prompts would block the entire flow.
 
 ## Monitor Progress
 
