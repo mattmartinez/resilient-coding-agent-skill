@@ -24,6 +24,20 @@ set -uo pipefail
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_SCRIPT_DIR/lib.sh"
 
+# _log: structured log write that bypasses stdio buffering. nohup
+# redirects stdout to a file, which block-buffers through libc -- so
+# echo output from a still-running monitor is invisible in the log
+# file until the process exits. Writing via explicit file append on
+# every call sidesteps that: kernel writes are immediately visible.
+# Each line also goes to stdout so normal nohup capture still works.
+_log() {
+  local msg="[monitor $(date -u +%H:%M:%S) pid=$$] $*"
+  echo "$msg"
+  if [ -n "${TASK_TMPDIR:-}" ] && [ -d "${TASK_TMPDIR:-}" ]; then
+    echo "$msg" >> "$TASK_TMPDIR/monitor.trace" 2>/dev/null || true
+  fi
+}
+
 # --- Cross-platform helpers ---
 
 # get_mtime: return epoch seconds of file mtime
@@ -142,6 +156,7 @@ dispatch_resume() {
 # --- Cleanup (EXIT trap) ---
 
 cleanup() {
+  _log "cleanup starting session=${SESSION:-unset}"
   # Guard: only update manifest if task not already completed
   if [ -f "$TASK_TMPDIR/manifest" ] && [ ! -f "$TASK_TMPDIR/done" ]; then
     # Only set abandoned if not already set by dispatch_resume max-retry path
@@ -157,6 +172,7 @@ cleanup() {
   tmux pipe-pane -t "$SESSION" 2>/dev/null || true
   tmux kill-session -t "$SESSION" 2>/dev/null || true
   rm -f "$TASK_TMPDIR/monitor.pid" 2>/dev/null || true
+  _log "cleanup done"
 }
 
 # --- Main function ---
@@ -183,12 +199,15 @@ main() {
   # SIGTERM handler: distinguishes wrapper-sent completion signal from
   # external termination. The wrapper sends SIGTERM after touching done;
   # if we see done when the signal arrives, it's normal completion.
+  # All output is line-buffered via stdbuf-like redirect to make logs
+  # observable immediately (nohup otherwise block-buffers stdout).
   handle_term() {
+    _log "SIGTERM received"
     if [ -f "$TASK_TMPDIR/done" ]; then
-      echo "Completion signal received. Task done."
+      _log "done-file present -- normal completion path"
       exit 0
     fi
-    echo "Received SIGTERM -- shutting down"
+    _log "done-file absent -- external termination path"
     exit 143
   }
 
@@ -205,6 +224,7 @@ main() {
   # poll cycle -- up to MONITOR_BASE_INTERVAL seconds of latency.
   echo $$ > "$TASK_TMPDIR/monitor.pid.tmp" \
     && mv "$TASK_TMPDIR/monitor.pid.tmp" "$TASK_TMPDIR/monitor.pid"
+  _log "started session=$SESSION tmpdir=$TASK_TMPDIR"
 
   # Configurable intervals (override via environment)
   MONITOR_BASE_INTERVAL="${MONITOR_BASE_INTERVAL:-30}"     # seconds; default 30s

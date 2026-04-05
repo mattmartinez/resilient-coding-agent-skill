@@ -94,16 +94,27 @@ manifest_set "$TASK_TMPDIR/manifest" \
 touch "$TASK_TMPDIR/done"
 
 # Tell the monitor to exit immediately so cleanup happens without
-# polling latency. We use SIGTERM (not SIGUSR1): TERM is reliably
-# handled by the monitor's trap even when it's in a sleep, and the
-# monitor's handler checks the done file to distinguish completion
-# from external termination.
-# Best-effort: if monitor.pid is missing or stale, the monitor will
-# still detect completion on its next poll.
+# polling latency. We use SIGTERM: the monitor's trap is installed
+# before monitor.pid is written, so there is no race window, and the
+# trap's handle_term function distinguishes completion (done exists,
+# exit 0) from external termination (exit 143). Observability is
+# written to the manifest so silent failures are visible.
+_signal_outcome="unknown"
 if [ -f "$TASK_TMPDIR/monitor.pid" ]; then
   MONITOR_PID="$(cat "$TASK_TMPDIR/monitor.pid" 2>/dev/null || true)"
-  [ -n "$MONITOR_PID" ] && kill -TERM "$MONITOR_PID" 2>/dev/null || true
+  if [ -z "$MONITOR_PID" ]; then
+    _signal_outcome="monitor_pid_empty"
+  elif ! kill -0 "$MONITOR_PID" 2>/dev/null; then
+    _signal_outcome="monitor_not_live:$MONITOR_PID"
+  elif kill -TERM "$MONITOR_PID" 2>/dev/null; then
+    _signal_outcome="signaled:$MONITOR_PID"
+  else
+    _signal_outcome="kill_failed:$MONITOR_PID"
+  fi
+else
+  _signal_outcome="monitor_pid_missing"
 fi
+manifest_set "$TASK_TMPDIR/manifest" monitor_signal "$_signal_outcome"
 
 # Fire-and-forget notification (after signal so monitor doesn't wait on us)
 openclaw system event --text "Claude done: $(manifest_read task_name "$TASK_TMPDIR/manifest")" --mode now || true
