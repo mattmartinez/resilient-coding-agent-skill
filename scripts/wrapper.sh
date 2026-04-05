@@ -93,12 +93,16 @@ manifest_set "$TASK_TMPDIR/manifest" \
 # as a crash.
 touch "$TASK_TMPDIR/done"
 
-# Wake the monitor immediately so cleanup happens without polling latency.
-# Best-effort: if monitor.pid is missing or stale, the monitor will still
-# detect completion on its next poll (up to MONITOR_BASE_INTERVAL later).
+# Tell the monitor to exit immediately so cleanup happens without
+# polling latency. We use SIGTERM (not SIGUSR1): TERM is reliably
+# handled by the monitor's trap even when it's in a sleep, and the
+# monitor's handler checks the done file to distinguish completion
+# from external termination.
+# Best-effort: if monitor.pid is missing or stale, the monitor will
+# still detect completion on its next poll.
 if [ -f "$TASK_TMPDIR/monitor.pid" ]; then
   MONITOR_PID="$(cat "$TASK_TMPDIR/monitor.pid" 2>/dev/null || true)"
-  [ -n "$MONITOR_PID" ] && kill -USR1 "$MONITOR_PID" 2>/dev/null || true
+  [ -n "$MONITOR_PID" ] && kill -TERM "$MONITOR_PID" 2>/dev/null || true
 fi
 
 # Fire-and-forget notification (after signal so monitor doesn't wait on us)

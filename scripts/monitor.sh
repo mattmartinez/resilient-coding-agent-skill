@@ -180,6 +180,26 @@ main() {
   # Resolve wrapper path
   WRAPPER_PATH="$_SCRIPT_DIR/wrapper.sh"
 
+  # SIGTERM handler: distinguishes wrapper-sent completion signal from
+  # external termination. The wrapper sends SIGTERM after touching done;
+  # if we see done when the signal arrives, it's normal completion.
+  handle_term() {
+    if [ -f "$TASK_TMPDIR/done" ]; then
+      echo "Completion signal received. Task done."
+      exit 0
+    fi
+    echo "Received SIGTERM -- shutting down"
+    exit 143
+  }
+
+  # Install signal traps BEFORE writing monitor.pid, so there is no
+  # window where a signal sent by the wrapper would hit default signal
+  # handlers (which would kill the monitor without running cleanup).
+  trap handle_term TERM
+  trap 'echo "Received SIGHUP -- shutting down"; exit 129' HUP
+  trap 'echo "Received SIGINT -- shutting down"; exit 130' INT
+  trap cleanup EXIT
+
   # Record monitor PID so the wrapper can signal us on completion.
   # Without this, the wrapper's touch-done is only seen on the next
   # poll cycle -- up to MONITOR_BASE_INTERVAL seconds of latency.
@@ -199,19 +219,6 @@ main() {
   STALE_SINCE=""
   START_TS="$(date +%s)"
   DEADLINE_TS=$(( START_TS + MONITOR_DEADLINE ))
-
-  # Signal handling: gracefully handle softer signals before SIGKILL.
-  # SIGKILL cannot be trapped -- if the launching shell's process group
-  # gets torn down with SIGKILL, the monitor dies abruptly. Launch with
-  # `nohup ... &` (see SKILL.md) to survive parent shell exit.
-  trap 'echo "Received SIGTERM -- shutting down"; exit 143' TERM
-  trap 'echo "Received SIGHUP -- shutting down"; exit 129' HUP
-  trap 'echo "Received SIGINT -- shutting down"; exit 130' INT
-  # SIGUSR1 is the wake-from-sleep signal sent by wrapper on completion.
-  # The no-op handler is sufficient: bash interrupts sleep when a trapped
-  # signal arrives, returning control to the loop which then sees done.
-  trap ':' USR1
-  trap cleanup EXIT
 
   # --- Main loop ---
 
