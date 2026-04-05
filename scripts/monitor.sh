@@ -88,9 +88,21 @@ classify_pane_state() {
 _classify_pane_text() {
   local pane="$1"
 
+  # Prompts live at the bottom of a pane, not scattered throughout scrollback.
+  # Matching the whole capture causes false positives when normal output
+  # contains phrases like "continue?" in code, docs, or tool output.
+  local tail
+  tail=$(printf '%s\n' "$pane" | tail -n 5)
+
   # Approval/trust prompts -- unexpected with --dangerously-skip-permissions
-  # but trust-on-first-use or edge-case dialogs can still appear.
-  if printf '%s' "$pane" | grep -qiE 'do you trust|\(y/n\)|continue\?|press .* to continue'; then
+  # but trust-on-first-use or edge-case dialogs can still appear. Patterns
+  # target actual prompt shapes (trailing (y/N), Claude's specific trust
+  # dialog text) rather than loose keyword matching.
+  if printf '%s' "$tail" | grep -qE '\([YyNn]/[YyNn]\)[[:space:]]*$|\[[YyNn]/[YyNn]\][[:space:]]*$'; then
+    echo waiting_for_input
+    return
+  fi
+  if printf '%s' "$tail" | grep -qiE 'do you trust the files|trust the authors'; then
     echo waiting_for_input
     return
   fi
@@ -119,28 +131,31 @@ _classify_pane_text() {
 dispatch_resume() {
   local reason="$1" status="$2"
   RETRY_COUNT=$(( RETRY_COUNT + 1 ))
+  TOTAL_RETRY_COUNT=$(( TOTAL_RETRY_COUNT + 1 ))
 
-  # Max retry check
-  if [ "$RETRY_COUNT" -gt "$MONITOR_MAX_RETRIES" ]; then
+  # Max retry check uses TOTAL_RETRY_COUNT, which never resets. RETRY_COUNT
+  # is reset by fresh-output detection for backoff purposes, but the retry
+  # cap must be cumulative so a flapping task cannot escape the budget.
+  if [ "$TOTAL_RETRY_COUNT" -gt "$MONITOR_MAX_RETRIES" ]; then
     echo "Max retries ($MONITOR_MAX_RETRIES) exceeded. Abandoning task."
     # Update manifest with abandon reason before EXIT trap fires
     if [ -f "$TASK_TMPDIR/manifest" ]; then
       manifest_set "$TASK_TMPDIR/manifest" \
         status abandoned \
         abandon_reason max_retries_exceeded \
-        retry_count "$RETRY_COUNT" \
+        retry_count "$TOTAL_RETRY_COUNT" \
         abandoned_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
     fi
     exit 1  # EXIT trap fires for cleanup
   fi
 
-  echo "$reason Resuming (retry #$RETRY_COUNT)"
+  echo "$reason Resuming (retry #$TOTAL_RETRY_COUNT)"
 
   # Update manifest with status (crashed or hung)
   if [ -f "$TASK_TMPDIR/manifest" ]; then
     manifest_set "$TASK_TMPDIR/manifest" \
       status "$status" \
-      retry_count "$RETRY_COUNT" \
+      retry_count "$TOTAL_RETRY_COUNT" \
       last_checked_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   fi
 
@@ -148,8 +163,13 @@ dispatch_resume() {
   touch "$TASK_TMPDIR/resume"
   rm -f "$TASK_TMPDIR/pid"
 
-  # Dispatch wrapper (resolves mode from resume file)
-  tmux send-keys -t "$SESSION" "bash $WRAPPER_PATH" Enter
+  # Dispatch wrapper (resolves mode from resume file). Use printf %q to
+  # shell-quote WRAPPER_PATH so paths containing spaces or shell metacharacters
+  # (common on macOS under paths like "My Skills/") do not word-split when
+  # the pane shell parses the send-keys input.
+  local quoted_path
+  quoted_path=$(printf '%q' "$WRAPPER_PATH")
+  tmux send-keys -t "$SESSION" "bash $quoted_path" Enter
   sleep "${MONITOR_DISPATCH_WAIT:-10}"
 }
 
@@ -234,9 +254,18 @@ main() {
   MONITOR_MAX_RETRIES="${MONITOR_MAX_RETRIES:-10}"         # max resume attempts
   MONITOR_DISPATCH_WAIT="${MONITOR_DISPATCH_WAIT:-10}"     # seconds; post-resume wait
 
-  # State variables
+  # State variables.
+  # RETRY_COUNT resets on fresh output (used for backoff interval).
+  # TOTAL_RETRY_COUNT never resets (used for the max-retries cap, so a
+  # flapping task cannot escape the retry budget by producing output
+  # between stalls).
+  # WAITING_COUNT is the hysteresis counter for pane_state=waiting_for_input:
+  # we only abandon after the classifier reports the same state across
+  # consecutive polls, avoiding single-poll false positives.
   RETRY_COUNT=0
+  TOTAL_RETRY_COUNT=0
   STALE_SINCE=""
+  WAITING_COUNT=0
   START_TS="$(date +%s)"
   DEADLINE_TS=$(( START_TS + MONITOR_DEADLINE ))
 
@@ -299,18 +328,26 @@ main() {
       manifest_set "$TASK_TMPDIR/manifest" pane_state "$PANE_STATE"
     fi
     if [ "$PANE_STATE" = "waiting_for_input" ]; then
-      # With --dangerously-skip-permissions, interactive prompts should
-      # not appear. If one does, nothing is going to answer it -- the
-      # task is permanently stuck. Abandon immediately with a specific
-      # reason so the Brain can react.
-      echo "Task stuck waiting for user input -- abandoning"
-      if [ -f "$TASK_TMPDIR/manifest" ]; then
-        manifest_set "$TASK_TMPDIR/manifest" \
-          status abandoned \
-          abandon_reason waiting_for_input \
-          abandoned_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+      # Hysteresis: require two consecutive detections before acting.
+      # The classifier can false-match on transient tail content (e.g.,
+      # Claude writing a code snippet that contains a prompt-shaped line).
+      # A single hit is not enough to abandon; persistence across polls
+      # is the real signal.
+      WAITING_COUNT=$(( WAITING_COUNT + 1 ))
+      if [ "$WAITING_COUNT" -ge 2 ]; then
+        echo "Task stuck waiting for user input -- abandoning (detected on $WAITING_COUNT consecutive polls)"
+        if [ -f "$TASK_TMPDIR/manifest" ]; then
+          manifest_set "$TASK_TMPDIR/manifest" \
+            status abandoned \
+            abandon_reason waiting_for_input \
+            abandoned_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+        fi
+        exit 1  # EXIT trap fires for cleanup
+      else
+        echo "Pane shows waiting_for_input -- watching for persistence before abandoning"
       fi
-      exit 1  # EXIT trap fires for cleanup
+    else
+      WAITING_COUNT=0
     fi
 
     # --- Layer 3: Output staleness (process alive, no done-file) ---

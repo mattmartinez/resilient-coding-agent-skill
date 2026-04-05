@@ -12,6 +12,7 @@ setup() {
   WRAPPER_PATH="$SCRIPT_DIR/scripts/wrapper.sh"
   MONITOR_MAX_RETRIES=3
   RETRY_COUNT=0
+  TOTAL_RETRY_COUNT=0
   STALE_SINCE=""
 }
 
@@ -66,9 +67,35 @@ teardown() {
   [ "$result" = "waiting_for_input" ]
 }
 
-@test "_classify_pane_text detects Continue? prompt" {
+@test "_classify_pane_text does NOT match Continue? in prose (false-positive guard)" {
+  # Regression test for BUG-2: the classifier must not flag legitimate
+  # Claude output that happens to contain the word "Continue?" as a
+  # waiting_for_input state. Only actual prompt shapes at end-of-line
+  # should match.
   result=$(_classify_pane_text "Continue? This will modify 42 files.")
-  [ "$result" = "waiting_for_input" ]
+  [ "$result" = "unknown" ]
+}
+
+@test "_classify_pane_text does NOT match y/n appearing mid-line" {
+  # Regression test for BUG-2: the string "(y/n)" inside prose or code
+  # should not be classified as waiting_for_input.
+  result=$(_classify_pane_text "The README mentions (y/n) prompts in the install script.")
+  [ "$result" = "unknown" ]
+}
+
+@test "_classify_pane_text ignores prompt shape NOT at bottom of pane" {
+  # Regression test for BUG-2: matches must be in the last 5 lines of
+  # the captured pane, not arbitrary positions in scrollback.
+  local pane
+  pane="Some prompt (y/N)
+line 2
+line 3
+line 4
+line 5
+line 6
+line 7 (no prompt here)"
+  result=$(_classify_pane_text "$pane")
+  [ "$result" = "unknown" ]
 }
 
 @test "_classify_pane_text detects panic crash text" {
@@ -155,7 +182,7 @@ teardown() {
   export -f tmux
 
   printf 'status=running\ntask_name=test\n' > "$TASK_TMPDIR/manifest"
-  RETRY_COUNT=3  # Already at max
+  TOTAL_RETRY_COUNT=3  # Already at max
 
   run dispatch_resume "Test crash." "crashed"
   [ "$status" -eq 1 ]
@@ -166,7 +193,7 @@ teardown() {
   export -f tmux
 
   printf 'status=running\ntask_name=test\n' > "$TASK_TMPDIR/manifest"
-  RETRY_COUNT=3
+  TOTAL_RETRY_COUNT=3
 
   run dispatch_resume "Test crash." "crashed"
   manifest_status=$(manifest_read status "$TASK_TMPDIR/manifest")
@@ -178,7 +205,7 @@ teardown() {
   export -f tmux
 
   printf 'status=running\ntask_name=test\n' > "$TASK_TMPDIR/manifest"
-  RETRY_COUNT=3
+  TOTAL_RETRY_COUNT=3
 
   run dispatch_resume "Test crash." "crashed"
   reason=$(manifest_read abandon_reason "$TASK_TMPDIR/manifest")
