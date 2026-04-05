@@ -93,5 +93,13 @@ manifest_set "$TASK_TMPDIR/manifest" \
 # as a crash.
 touch "$TASK_TMPDIR/done"
 
-# Fire-and-forget notification (after done, so monitor race is closed)
+# Wake the monitor immediately so cleanup happens without polling latency.
+# Best-effort: if monitor.pid is missing or stale, the monitor will still
+# detect completion on its next poll (up to MONITOR_BASE_INTERVAL later).
+if [ -f "$TASK_TMPDIR/monitor.pid" ]; then
+  MONITOR_PID="$(cat "$TASK_TMPDIR/monitor.pid" 2>/dev/null || true)"
+  [ -n "$MONITOR_PID" ] && kill -USR1 "$MONITOR_PID" 2>/dev/null || true
+fi
+
+# Fire-and-forget notification (after signal so monitor doesn't wait on us)
 openclaw system event --text "Claude done: $(manifest_read task_name "$TASK_TMPDIR/manifest")" --mode now || true

@@ -156,6 +156,7 @@ cleanup() {
   fi
   tmux pipe-pane -t "$SESSION" 2>/dev/null || true
   tmux kill-session -t "$SESSION" 2>/dev/null || true
+  rm -f "$TASK_TMPDIR/monitor.pid" 2>/dev/null || true
 }
 
 # --- Main function ---
@@ -179,6 +180,12 @@ main() {
   # Resolve wrapper path
   WRAPPER_PATH="$_SCRIPT_DIR/wrapper.sh"
 
+  # Record monitor PID so the wrapper can signal us on completion.
+  # Without this, the wrapper's touch-done is only seen on the next
+  # poll cycle -- up to MONITOR_BASE_INTERVAL seconds of latency.
+  echo $$ > "$TASK_TMPDIR/monitor.pid.tmp" \
+    && mv "$TASK_TMPDIR/monitor.pid.tmp" "$TASK_TMPDIR/monitor.pid"
+
   # Configurable intervals (override via environment)
   MONITOR_BASE_INTERVAL="${MONITOR_BASE_INTERVAL:-30}"     # seconds; default 30s
   MONITOR_MAX_INTERVAL="${MONITOR_MAX_INTERVAL:-300}"      # seconds; default 5m
@@ -200,6 +207,10 @@ main() {
   trap 'echo "Received SIGTERM -- shutting down"; exit 143' TERM
   trap 'echo "Received SIGHUP -- shutting down"; exit 129' HUP
   trap 'echo "Received SIGINT -- shutting down"; exit 130' INT
+  # SIGUSR1 is the wake-from-sleep signal sent by wrapper on completion.
+  # The no-op handler is sufficient: bash interrupts sleep when a trapped
+  # signal arrives, returning control to the loop which then sees done.
+  trap ':' USR1
   trap cleanup EXIT
 
   # --- Main loop ---
